@@ -1,0 +1,35 @@
+name = "mduik"
+main = "worker/src/index.js"
+compatibility_date = "2026-10-30"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mduik-db"
+database_id = "6425f8da-44b8-40ec-99af-5b544839fbfc"
+
+# R2 stores application documents, payment proofs and backups. The application
+# still falls back to D1 document storage if the binding is ever removed.
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "mduik-docs"
+
+# Cloudflare Email Service binding. When absent, notifications are still
+# recorded in the portal and the email is queued in the notification log.
+# [[send_email]]
+# name = "EMAIL"
+
+[triggers]
+crons = ["0 18 * * *"]
+
+[vars]
+APP_NAME = "MDUIK"
+APP_URL = "https://mduik.mohdzakaria.workers.dev"
+DEFAULT_LANGUAGE = "bm"
