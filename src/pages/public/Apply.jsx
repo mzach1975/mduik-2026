@@ -205,8 +205,8 @@ export default function Apply() {
           <p>{t('apply.subtitle')}</p>
         </header>
 
-        <div className="wizard">
-          <aside className="wizard__side">
+        <div className="wizard wizard__side">
+          <aside className="wizard__aside">
             <ol className="wizardsteps">
               {[t('apply.step1'), t('apply.step2'), t('apply.step3')].map((label, i) => (
                 <li key={label} className={`${i === step ? 'is-active' : ''} ${i < step ? 'is-done' : ''}`.trim()}>
