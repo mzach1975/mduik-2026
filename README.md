@@ -9,6 +9,7 @@ The system covers admissions and interviews, student/parent/teacher records, fee
 - Production: `https://mduik.mohdzakaria.workers.dev` (Cloudflare Workers)
 - Repository: `https://github.com/mzach1975/mduik-2026`
 - User manual: [`USER_MANUAL.md`](USER_MANUAL.md)
+- Panduan Pentadbir Sekolah (BM): [`PANDUAN_PENGGUNA_PENTADBIR_SEKOLAH.md`](PANDUAN_PENGGUNA_PENTADBIR_SEKOLAH.md)
 
 ## Technology
 
