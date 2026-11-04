@@ -14,6 +14,7 @@ import {
   PageHeader,
   Select,
   StatusBadge,
+  Textarea,
   useToast,
 } from '../components/ui';
 
@@ -33,6 +34,10 @@ export default function Imports() {
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState(null);
   const [confirming, setConfirming] = useState(false);
+  const [dupAction, setDupAction] = useState('');
+  const [dupReason, setDupReason] = useState('');
+  const dupRows = report?.report?.duplicates || 0;
+  const dupReady = !dupRows || dupAction === 'link' || (dupAction === 'create' && dupReason.trim().length >= 5);
 
   async function upload() {
     if (!file) return;
@@ -43,6 +48,8 @@ export default function Imports() {
       fd.append('file', file);
       const res = await api.upload('/imports', fd);
       setReport(res);
+      setDupAction('');
+      setDupReason('');
       push(t('imports.dryRunDone'));
       await reload(true);
     } catch (err) {
@@ -55,8 +62,11 @@ export default function Imports() {
   async function confirm() {
     setConfirming(true);
     try {
-      const res = await api.post(`/imports/${report.batch.id}/confirm`, {});
-      push(`${t('imports.imported')}: ${res.imported}`);
+      const res = await api.post(
+        `/imports/${report.batch.id}/confirm`,
+        dupRows ? { duplicateAction: dupAction, duplicateReason: dupAction === 'create' ? dupReason : undefined } : {},
+      );
+      push(`${t('imports.imported')}: ${res.imported}${res.parentSkipped ? ` · ${t('parentRecord.importSkipped', { n: res.parentSkipped })}` : ''}`);
       setReport(null);
       setFile(null);
       await reload(true);
@@ -140,7 +150,7 @@ export default function Imports() {
         footer={
           <>
             <button type="button" className="btn btn--ghost" onClick={() => setReport(null)}>{t('common.close')}</button>
-            <button type="button" className="btn btn--primary" disabled={confirming || !report?.report?.ok} onClick={confirm}>
+            <button type="button" className="btn btn--primary" disabled={confirming || !report?.report?.ok || !dupReady} onClick={confirm}>
               {confirming && <span className="spinner spinner--light" />} {t('imports.confirmImport')}
             </button>
           </>
@@ -154,14 +164,50 @@ export default function Imports() {
               <div className="miniStat"><span>{t('imports.failedRows')}</span><strong className="text-rose">{report.report.failed}</strong></div>
             </div>
             <Alert tone={report.report.failed ? 'warning' : 'success'}>{t('imports.confirmWarning')}</Alert>
+            {dupRows > 0 && (
+              <div className="insetform">
+                <Alert tone="warning" title={t('parentRecord.dupTitle')}>{t('parentRecord.importDupHint', { n: dupRows })}</Alert>
+                <div className="formgrid">
+                  <Field label={t('parentRecord.importChoice')} required>
+                    <Select value={dupAction} onChange={(e) => setDupAction(e.target.value)}>
+                      <option value="">{t('common.select')}</option>
+                      <option value="link">{t('parentRecord.linkExisting')}</option>
+                      <option value="create">{t('parentRecord.createAnyway')}</option>
+                    </Select>
+                  </Field>
+                  {dupAction === 'create' && (
+                    <Field label={t('parentRecord.reason')} hint={t('parentRecord.reasonHint')} required>
+                      <Textarea rows={2} value={dupReason} onChange={(e) => setDupReason(e.target.value)} />
+                    </Field>
+                  )}
+                </div>
+              </div>
+            )}
             <DataTable
               dense
               rows={report.report.rows || []}
               rowKey={(r) => r.row}
               columns={[
                 { key: 'row', label: t('imports.row'), align: 'right' },
-                { key: 'errors', label: t('imports.errors'), render: (r) => (r.errors.length ? <span className="text-rose">{r.errors.join('; ')}</span> : <Badge tone="green">{t('imports.validRows')}</Badge>) },
-                { key: 'data', label: t('common.contents'), render: (r) => <span className="mono smalltext">{Object.values(r.data).filter(Boolean).slice(0, 4).join(' · ')}</span> },
+                {
+                  key: 'errors',
+                  label: t('imports.errors'),
+                  render: (r) => {
+                    if (r.errors.length) return <span className="text-rose">{r.errors.join('; ')}</span>;
+                    if (r.duplicates?.length) return <Badge tone="amber">{t('parentRecord.dupBadge', { name: r.duplicates[0].full_name })}</Badge>;
+                    if (r.parentMatch) return <Badge tone="teal">{t('parentRecord.icMatchBadge', { name: r.parentMatch.full_name })}</Badge>;
+                    return <Badge tone="green">{t('imports.validRows')}</Badge>;
+                  },
+                },
+                {
+                  key: 'data',
+                  label: t('common.contents'),
+                  render: (r) => (
+                    <span className="mono smalltext">
+                      {Object.entries(r.data).filter(([k, v]) => v && !k.endsWith('_enc')).slice(0, 4).map(([, v]) => v).join(' · ')}
+                    </span>
+                  ),
+                },
               ]}
             />
           </>

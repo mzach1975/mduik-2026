@@ -206,9 +206,11 @@ export async function resolveAuth(env, token) {
     const schoolIds = [...new Set(roles.map((r) => r.school_id).filter(Boolean))];
     if (!activeSchool || !schoolIds.includes(activeSchool)) activeSchool = schoolIds[0] || null;
   }
-  const parent = user.parent_id
+  const parentRow = user.parent_id
     ? await db.prepare('SELECT * FROM parents WHERE id = ?').bind(user.parent_id).first()
     : null;
+  // A deactivated parent record gives no portal access.
+  const parent = parentRow && parentRow.status !== 'inactive' ? parentRow : null;
   const school = activeSchool ? await db.prepare('SELECT * FROM schools WHERE id = ?').bind(activeSchool).first() : null;
   if (!school) activeSchool = null;
   return {

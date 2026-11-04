@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { authMiddleware, requireRoles } from '../lib/auth.js';
+import { authMiddleware, requireRoles, encryptIc, decryptIc } from '../lib/auth.js';
 import {
   id,
   nowIso,
@@ -15,8 +15,10 @@ import {
   pagingMeta,
   yearOf,
   monthOf,
+  normalizeIc,
 } from '../lib/util.js';
 import { audit } from '../lib/audit.js';
+import { planParent, commitParent, linkParentToStudent, findParentByIc, findContactMatches, normalizePhone } from '../lib/parents.js';
 import { flagRetentionRecords, runDaily, createInvoice, dueDateFor } from '../lib/finance.js';
 import { notify } from '../lib/notify.js';
 
@@ -286,8 +288,8 @@ admin.post('/retention/:id/dismiss', requireRoles('school_admin'), async (c) => 
 
 /* ------------------------------ Imports ------------------------------ */
 const TEMPLATES = {
-  students: ['full_name', 'ic', 'dob', 'gender', 'class_name', 'phone', 'email', 'address', 'parent_name', 'parent_email', 'parent_phone', 'monthly_fee', 'status'],
-  parents: ['full_name', 'email', 'phone', 'address', 'student_name'],
+  students: ['full_name', 'ic', 'dob', 'gender', 'class_name', 'phone', 'email', 'address', 'parent_name', 'parent_ic', 'parent_email', 'parent_phone', 'monthly_fee', 'status'],
+  parents: ['full_name', 'ic', 'email', 'phone', 'address', 'student_name'],
   teachers: ['full_name', 'email', 'phone', 'ic'],
   'opening-balances': ['student_name', 'student_ic', 'amount', 'due_date', 'description'],
 };
@@ -306,12 +308,47 @@ function normaliseRow(type, row) {
   return out;
 }
 
+const STUDENT_PARENT = { ic: 'parent_ic', name: 'parent_name', email: 'parent_email', phone: 'parent_phone' };
+const PARENT_ROW = { ic: 'ic', name: 'full_name', email: 'email', phone: 'phone' };
+
+/**
+ * Same parent checks as the forms: an IC match will link the existing parent,
+ * and an email/phone match is reported so the admin chooses link or create.
+ * The raw IC is replaced by its ciphertext before the report is stored.
+ */
+async function checkImportParent(env, r, f, errors) {
+  const out = { warnings: [], duplicates: [], parentMatch: null };
+  const raw = r[f.ic];
+  if (raw) {
+    delete r[f.ic];
+    if (normalizeIc(raw).length < 6) {
+      errors.push('IC ibu bapa tidak sah / invalid parent IC');
+      return out;
+    }
+    const ic = await encryptIc(env, raw);
+    r[`${f.ic}_enc`] = ic.enc;
+    r[`${f.ic}_masked`] = ic.masked;
+    const match = await findParentByIc(env, raw);
+    if (match) {
+      out.parentMatch = { id: match.id, full_name: match.full_name };
+      return out;
+    }
+  }
+  const dups = await findContactMatches(env, { email: r[f.email], phone: r[f.phone] });
+  if (dups.length) {
+    out.warnings.push('E-mel/telefon ibu bapa sudah wujud / parent email or phone already exists');
+    out.duplicates = dups.map((d) => ({ id: d.id, full_name: d.full_name, matchedOn: d.matchedOn }));
+  }
+  return out;
+}
+
 async function validateImport(env, schoolId, type, rows) {
   const results = [];
   const seenEmail = new Set();
   for (let i = 0; i < rows.length; i++) {
     const r = normaliseRow(type, rows[i]);
     const errors = [];
+    let parentCheck = null;
     if (type === 'students') {
       if (!r.full_name) errors.push('Nama diperlukan / name required');
       if (r.ic) {
@@ -321,12 +358,14 @@ async function validateImport(env, schoolId, type, rows) {
         if (dup) errors.push('IC sudah wujud / duplicate IC');
       }
       if (r.parent_email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r.parent_email)) errors.push('E-mel ibu bapa tidak sah / invalid parent email');
+      if (r.parent_name || r.parent_ic) parentCheck = await checkImportParent(env, r, STUDENT_PARENT, errors);
       if (r.monthly_fee && Number.isNaN(Number(String(r.monthly_fee).replace(/[^0-9.]/g, '')))) errors.push('Yuran tidak sah / invalid fee');
     } else if (type === 'parents') {
       if (!r.full_name) errors.push('Nama diperlukan / name required');
       if (!r.email && !r.phone) errors.push('E-mel atau telefon diperlukan / email or phone required');
       if (r.email && seenEmail.has(r.email.toLowerCase())) errors.push('E-mel berulang dalam fail / duplicate email in file');
       if (r.email) seenEmail.add(r.email.toLowerCase());
+      parentCheck = await checkImportParent(env, r, PARENT_ROW, errors);
     } else if (type === 'teachers') {
       if (!r.full_name) errors.push('Nama diperlukan / name required');
       if (!r.email) errors.push('E-mel diperlukan / email required');
@@ -344,7 +383,7 @@ async function validateImport(env, schoolId, type, rows) {
         if (!st) errors.push('Pelajar tidak dijumpai / student not found');
       }
     }
-    results.push({ row: i + 2, data: r, errors });
+    results.push({ row: i + 2, data: r, errors, ...(parentCheck || {}) });
   }
   return results;
 }
@@ -393,6 +432,7 @@ admin.post('/imports', requireRoles('school_admin'), async (c) => {
     total: rows.length,
     ok: ok.length,
     failed: failed.length,
+    duplicates: ok.filter((v) => v.duplicates?.length).length,
     rows: validation,
     header: rows.length ? Object.keys(normaliseRow(type, rows[0])) : TEMPLATES[type],
   };
@@ -412,7 +452,7 @@ admin.post('/imports', requireRoles('school_admin'), async (c) => {
     .bind(batchId, auth.activeSchool, type, filename, 'dry_run', rows.length, ok.length, failed.length, JSON.stringify(report), auth.user.id, nowIso())
     .run();
   await audit(c, 'dry_run', 'import', batchId, { after: { type, total: rows.length, ok: ok.length, failed: failed.length } });
-  return json({ batch: { id: batchId, type, filename, total: rows.length, ok: ok.length, failed: failed.length }, report }, 201);
+  return json({ batch: { id: batchId, type, filename, total: rows.length, ok: ok.length, failed: failed.length, duplicates: report.duplicates }, report }, 201);
 });
 
 admin.post('/imports/:id/confirm', requireRoles('school_admin'), async (c) => {
@@ -424,7 +464,23 @@ admin.post('/imports/:id/confirm', requireRoles('school_admin'), async (c) => {
   if (batch.status !== 'dry_run') return bad('Batch sudah diproses. / Batch already processed.');
   const report = JSON.parse(batch.report_json);
   const valid = report.rows.filter((r) => !r.errors.length);
+  const body = await readJson(c);
+  const dupRows = valid.filter((r) => r.duplicates?.length).length;
+  const duplicateAction = ['link', 'create'].includes(body.duplicateAction) ? body.duplicateAction : null;
+  const duplicateReason = String(body.duplicateReason || '').trim();
+  if (dupRows && !duplicateAction) {
+    return bad(
+      `${dupRows} baris mempunyai e-mel/telefon ibu bapa yang sudah wujud. Pilih pautkan atau cipta juga. / ${dupRows} rows have a parent email or phone that already exists. Choose link or create anyway.`,
+      409,
+      { code: 'duplicate_contact', rows: dupRows },
+    );
+  }
+  if (duplicateAction === 'create' && duplicateReason.length < 5) {
+    return bad('Sebab diperlukan untuk cipta juga. / A reason is required to create anyway.', 400, { code: 'reason_required' });
+  }
+  const importParent = makeParentImporter(c, auth.activeSchool, batch.id, duplicateAction, duplicateReason);
   let inserted = 0;
+  let parentSkipped = 0;
   const plan = await c.env.DB.prepare('SELECT * FROM fee_plans WHERE school_id = ? AND active = 1 ORDER BY created_at LIMIT 1')
     .bind(auth.activeSchool)
     .first();
@@ -466,40 +522,21 @@ admin.post('/imports/:id/confirm', requireRoles('school_admin'), async (c) => {
           nowIso(),
         )
         .run();
-      if (r.parent_name) {
-        let parent = r.parent_email
-          ? await c.env.DB.prepare('SELECT * FROM parents WHERE lower(email) = lower(?)').bind(r.parent_email).first()
-          : null;
-        if (!parent) {
-          const parentId = id('par');
-          await c.env.DB.prepare('INSERT INTO parents (id, full_name, email, phone, address, created_at) VALUES (?,?,?,?,?,?)')
-            .bind(parentId, r.parent_name, r.parent_email || '', r.parent_phone || '', r.address || '', nowIso())
-            .run();
-          parent = { id: parentId };
-        }
-        await c.env.DB.prepare("INSERT OR IGNORE INTO parent_students (id, parent_id, student_id, relationship) VALUES (?,?,?,'guardian')")
-          .bind(id('ps'), parent.id, studentId)
-          .run();
+      if (r.parent_name || r.parent_ic_enc) {
+        const parent = await importParent(r, STUDENT_PARENT, studentId);
+        if (!parent) parentSkipped++;
       }
       inserted++;
     } else if (batch.type === 'parents') {
-      const existing = r.email
-        ? await c.env.DB.prepare('SELECT id FROM parents WHERE lower(email) = lower(?)').bind(r.email).first()
+      const st = r.student_name
+        ? await c.env.DB.prepare('SELECT id FROM students WHERE school_id = ? AND lower(full_name) = lower(?)')
+            .bind(auth.activeSchool, r.student_name)
+            .first()
         : null;
-      if (existing) continue;
-      const parentId = id('par');
-      await c.env.DB.prepare('INSERT INTO parents (id, full_name, email, phone, address, created_at) VALUES (?,?,?,?,?,?)')
-        .bind(parentId, r.full_name, r.email || '', r.phone || '', r.address || '', nowIso())
-        .run();
-      if (r.student_name) {
-        const st = await c.env.DB.prepare('SELECT id FROM students WHERE school_id = ? AND lower(full_name) = lower(?)')
-          .bind(auth.activeSchool, r.student_name)
-          .first();
-        if (st) {
-          await c.env.DB.prepare("INSERT OR IGNORE INTO parent_students (id, parent_id, student_id, relationship) VALUES (?,?,?,'guardian')")
-            .bind(id('ps'), parentId, st.id)
-            .run();
-        }
+      const parent = await importParent(r, PARENT_ROW, st?.id || null);
+      if (!parent) {
+        parentSkipped++;
+        continue;
       }
       inserted++;
     } else if (batch.type === 'teachers') {
@@ -539,11 +576,60 @@ admin.post('/imports/:id/confirm', requireRoles('school_admin'), async (c) => {
     }
   }
   await c.env.DB.prepare("UPDATE import_batches SET status = 'confirmed', report_json = ? WHERE id = ?")
-    .bind(JSON.stringify({ ...report, imported: inserted }), batch.id)
+    .bind(JSON.stringify({ ...report, imported: inserted, parentSkipped, duplicateAction, duplicateReason: duplicateReason || null }), batch.id)
     .run();
-  await audit(c, 'confirm', 'import', batch.id, { after: { imported: inserted } });
-  return json({ imported: inserted, failed: report.failed });
+  await audit(c, 'confirm', 'import', batch.id, {
+    after: { imported: inserted, parentSkipped, duplicateAction, duplicateReason: duplicateReason || null },
+  });
+  return json({ imported: inserted, failed: report.failed, parentSkipped });
 });
+
+/**
+ * Creates or links import parents with the same rules as the forms. Rows in the
+ * same file that share an email or phone resolve to one parent (rows with an IC
+ * resolve through the IC itself).
+ */
+function makeParentImporter(c, schoolId, batchId, duplicateAction, duplicateReason) {
+  const seen = new Map();
+  const created = new Set();
+  const keysOf = (r, f) => {
+    const keys = [];
+    if (r[f.email]) keys.push(`e:${String(r[f.email]).trim().toLowerCase()}`);
+    const ph = normalizePhone(r[f.phone]);
+    if (ph) keys.push(`p:${ph}`);
+    return keys;
+  };
+  return async (r, f, studentId) => {
+    const ic = r[`${f.ic}_enc`] ? await decryptIc(c.env, r[`${f.ic}_enc`]) : null;
+    const keys = keysOf(r, f);
+    const input = {
+      ic,
+      name: r[f.name],
+      email: r[f.email],
+      phone: r[f.phone],
+      address: r.address,
+      createAnyway: duplicateAction === 'create',
+      duplicateReason,
+    };
+    // A contact first created by this file is the same person (e.g. siblings), not a duplicate.
+    const fromFile = !ic && keys.map((k) => seen.get(k)).find((p) => p && created.has(p.id));
+    let plan = fromFile ? { parent: fromFile } : await planParent(c.env, input, { schoolId });
+    if (plan.conflict && duplicateAction === 'link') {
+      plan = await planParent(c.env, { parentId: plan.conflict[0].id, email: input.email, phone: input.phone }, { schoolId });
+    }
+    if (plan.conflict || plan.error) return null;
+    const parent = await commitParent(c.env, plan);
+    if (plan.create) created.add(parent.id);
+    for (const k of keys) if (!seen.has(k)) seen.set(k, parent);
+    if (studentId) await linkParentToStudent(c.env, parent.id, studentId, schoolId);
+    if (plan.create) {
+      await audit(c, 'create', 'parent', parent.id, {
+        after: { via: 'import', batchId, duplicateReason: plan.create.duplicateReason, duplicateOf: plan.create.duplicateOf },
+      });
+    }
+    return parent;
+  };
+}
 
 /* ------------------------------ Backups ------------------------------ */
 admin.get('/backups', requireRoles('school_admin'), async (c) => {

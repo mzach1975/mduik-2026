@@ -3,6 +3,7 @@ import { authMiddleware, requireRoles, hashPassword, encryptIc, hashIc, publicUs
 import { id, nowIso, readJson, bad, json, slugify, pick, normalizeIc } from '../lib/util.js';
 import { audit } from '../lib/audit.js';
 import { notify } from '../lib/notify.js';
+import { planParent, planFailure, commitParent, linkParentToStudent } from '../lib/parents.js';
 
 const tenants = new Hono();
 tenants.use('*', authMiddleware);
@@ -300,26 +301,25 @@ tenants.post('/users', requireRoles('school_admin'), async (c) => {
     db.prepare("INSERT INTO user_roles (id, user_id, school_id, role, started_at, status) VALUES (?,?,?,?,?,'active')")
       .bind(id('url'), userId, schoolId, role, nowIso()),
   ];
+  let parentPlan = null;
   if (role === 'parent') {
-    const existingParent = body.phone
-      ? await db.prepare('SELECT * FROM parents WHERE phone = ? AND lower(full_name) = lower(?)').bind(body.phone, body.fullName).first()
-      : null;
-    const parentId = existingParent?.id || id('par');
-    if (!existingParent) {
-      stmts.push(
-        db.prepare('INSERT INTO parents (id, full_name, email, phone, ic_masked, address, user_id, created_at) VALUES (?,?,?,?,?,?,?,?)')
-          .bind(parentId, body.fullName, body.email, body.phone || '', ic.masked, body.address || '', userId, nowIso()),
-      );
-    } else {
-      stmts.push(db.prepare('UPDATE parents SET user_id = ? WHERE id = ?').bind(userId, parentId));
-    }
-    stmts.push(db.prepare('UPDATE users SET parent_id = ? WHERE id = ?').bind(parentId, userId));
-    for (const sid of studentIds) {
-      stmts.push(
-        db.prepare("INSERT OR IGNORE INTO parent_students (id, parent_id, student_id, relationship) VALUES (?,?,?,'guardian')")
-          .bind(id('ps'), parentId, sid),
-      );
-    }
+    parentPlan = await planParent(
+      c.env,
+      {
+        parentId: body.parentId || null,
+        ic: body.ic,
+        name: body.fullName,
+        email: body.email,
+        phone: body.phone,
+        address: body.address,
+        createAnyway: body.createAnyway === true,
+        duplicateReason: body.duplicateReason,
+      },
+      { schoolId },
+    );
+    const failure = planFailure(parentPlan);
+    if (failure) return failure;
+    if (parentPlan.parent?.user_id) return bad('Ibu bapa ini sudah mempunyai akaun. / This parent already has an account.', 409);
   }
   if (role === 'teacher') {
     stmts.push(
@@ -328,6 +328,17 @@ tenants.post('/users', requireRoles('school_admin'), async (c) => {
     );
   }
   await db.batch(stmts);
+  if (parentPlan) {
+    const parent = await commitParent(c.env, parentPlan);
+    await db.batch([
+      db.prepare('UPDATE parents SET user_id = ? WHERE id = ?').bind(userId, parent.id),
+      db.prepare('UPDATE users SET parent_id = ? WHERE id = ?').bind(parent.id, userId),
+    ]);
+    for (const sid of studentIds) await linkParentToStudent(c.env, parent.id, sid, schoolId);
+    await audit(c, parentPlan.create ? 'create' : 'link', 'parent', parent.id, {
+      after: { via: 'user', userId, duplicateReason: parentPlan.create?.duplicateReason || null, matchedByIc: !!parentPlan.matchedByIc },
+    });
+  }
   await notify(c.env, {
     schoolId,
     userId,
@@ -358,6 +369,12 @@ tenants.patch('/users/:id', requireRoles('school_admin'), async (c) => {
   }
   const updates = {};
   const statusChange = ['active', 'inactive'].includes(body.status) ? body.status : null;
+  if (statusChange && !auth.isSuper) {
+    const parentRole = await c.env.DB.prepare("SELECT 1 AS ok FROM user_roles WHERE user_id = ? AND role = 'parent' LIMIT 1").bind(userId).first();
+    if (target.parent_id || parentRole) {
+      return bad('Hanya Pentadbir Super boleh menyahaktifkan akaun ibu bapa. / Only the Super Admin can deactivate a parent account.', 403);
+    }
+  }
   if (statusChange === 'inactive' && userId === auth.user.id) {
     return bad('Anda tidak boleh menyahaktifkan akaun anda sendiri. / You cannot deactivate your own account.');
   }

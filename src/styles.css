@@ -1643,6 +1643,33 @@ ul, ol { margin: 0; padding: 0; }
 .childcard__balance span { display: block; font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
 .childcard__balance strong { font-size: 1.08rem; }
 .childcard__foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.7rem; color: var(--muted); flex-wrap: wrap; }
+.childcard__school { display: flex; align-items: center; gap: 6px; font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--brand-600); margin-bottom: 10px; }
+.childcard__invoices { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 4px; font-size: 0.74rem; }
+.childcard__invoices li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 5px 0; border-bottom: 1px dashed var(--line); }
+.childcard__invoices li:last-child { border-bottom: 0; }
+.childcard__invoices .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.childcard__none { font-size: 0.74rem; margin: 0 0 12px; }
+.portaltotal { background: #fff; border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px 18px; margin-bottom: 16px; box-shadow: var(--shadow-sm); display: grid; gap: 10px; }
+.portaltotal__main { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.portaltotal__main span { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.portaltotal__main strong { font-size: 1.5rem; }
+.portaltotal__schools { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 0.8rem; }
+.portaltotal__schools li { display: flex; justify-content: space-between; gap: 12px; }
+.portaltotal > small { color: var(--muted); font-size: 0.7rem; }
+.parentpicker__search { display: flex; gap: 10px; align-items: flex-end; }
+.parentpicker__search .field { flex: 1; }
+.parentpicker__search .btn { margin-bottom: 14px; }
+.parentpicker__match, .parentpicker__dups { display: grid; gap: 10px; margin-bottom: 12px; }
+.duplist { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.duplist li { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.duplist li > div { min-width: 0; display: grid; gap: 2px; }
+.duplist small { color: var(--muted); overflow-wrap: anywhere; }
+.duplist__tags { display: flex; gap: 4px; flex-wrap: wrap; }
+@media (max-width: 560px) {
+  .parentpicker__search { flex-direction: column; align-items: stretch; }
+  .parentpicker__search .btn { margin-bottom: 0; }
+  .duplist li { flex-direction: column; align-items: stretch; }
+}
 .childcard__foot span { display: inline-flex; align-items: center; gap: 5px; }
 @media (max-width: 780px) { .childgrid { grid-template-columns: 1fr; } }
 .applist { display: flex; flex-direction: column; }

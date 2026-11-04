@@ -6,6 +6,7 @@ import { useI18n } from '../../i18n';
 import { useApi } from '../../hooks';
 import { fieldLabel } from '../../fieldLabels';
 import Icon from '../../components/Icon';
+import ParentPicker, { emptyParent, parentPayload, parentReady, takeDuplicateError } from '../../components/ParentPicker';
 import {
   Alert,
   Badge,
@@ -338,7 +339,11 @@ export default function ApplicationDetail() {
         onClose={() => setModal(null)}
         busy={busy}
         app={app}
-        onSubmit={(payload) => act(() => api.post(`/applications/${app.id}/register`, payload), t('applications.registered'))}
+        onDone={async (res) => {
+          push(res?.parentLinked ? t('parentRecord.registeredLinked') : t('applications.registered'));
+          setModal(null);
+          await reload(true);
+        }}
       />
       <ConfirmDialog
         open={modal === 'offer'}
@@ -470,18 +475,35 @@ function DecisionModal({ open, onClose, onSubmit, busy, current }) {
   );
 }
 
-function RegisterModal({ open, onClose, onSubmit, busy, app }) {
+function RegisterModal({ open, onClose, onDone, app }) {
   const { t } = useI18n();
+  const { push } = useToast();
   const { data: settings } = useApi('/school-settings', { enabled: open });
+  const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({
     fullName: app.student_name || '',
     className: app.class_name || '',
     monthlyFee: '',
-    parentName: app.parent_name || '',
-    parentEmail: app.parent_email || '',
-    parentPhone: app.parent_phone || '',
   });
+  const [parent, setParent] = useState(() => emptyParent({ name: app.parent_name, email: app.parent_email, phone: app.parent_phone }));
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  async function submit() {
+    setBusy(true);
+    try {
+      const { monthlyFee: _ignored, ...rest } = form;
+      const res = await api.post(`/applications/${app.id}/register`, {
+        ...rest,
+        ...parentPayload(parent),
+        monthlyFeeCents: monthlyFee ? Math.round(Number(monthlyFee) * 100) : undefined,
+      });
+      await onDone(res);
+    } catch (err) {
+      if (!takeDuplicateError(err, setParent)) push(err.message, 'danger');
+    } finally {
+      setBusy(false);
+    }
+  }
   const plan = settings?.feePlans?.find((p) => p.active);
   const monthlyFee = form.monthlyFee || (plan ? (plan.monthly_fee_cents / 100).toFixed(2) : '');
 
@@ -494,15 +516,7 @@ function RegisterModal({ open, onClose, onSubmit, busy, app }) {
       footer={
         <>
           <button type="button" className="btn btn--ghost" onClick={onClose}>{t('common.cancel')}</button>
-          <button
-            type="button"
-            className="btn btn--primary"
-            disabled={busy}
-            onClick={() => {
-              const { monthlyFee: _ignored, ...rest } = form;
-              onSubmit({ ...rest, monthlyFeeCents: monthlyFee ? Math.round(Number(monthlyFee) * 100) : undefined });
-            }}
-          >
+          <button type="button" className="btn btn--primary" disabled={busy || !parentReady(parent)} onClick={submit}>
             {busy && <span className="spinner spinner--light" />} {t('applications.registerStudent')}
           </button>
         </>
@@ -520,17 +534,7 @@ function RegisterModal({ open, onClose, onSubmit, busy, app }) {
         </Field>
       </div>
       <h4 className="detaillabel">{t('applications.parentInfo')}</h4>
-      <div className="formgrid">
-        <Field label={t('common.name')}>
-          <Input value={form.parentName} onChange={(e) => set('parentName', e.target.value)} />
-        </Field>
-        <Field label={t('common.email')}>
-          <Input type="email" value={form.parentEmail} onChange={(e) => set('parentEmail', e.target.value)} />
-        </Field>
-        <Field label={t('common.phone')}>
-          <Input value={form.parentPhone} onChange={(e) => set('parentPhone', e.target.value)} />
-        </Field>
-      </div>
+      <ParentPicker value={parent} onChange={setParent} />
       <Alert tone="warning">{t('applications.arrearsWarning')}</Alert>
     </Modal>
   );

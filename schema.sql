@@ -107,15 +107,24 @@ CREATE TABLE IF NOT EXISTS students (
 CREATE INDEX IF NOT EXISTS idx_students_school ON students(school_id, status);
 CREATE INDEX IF NOT EXISTS idx_students_ic ON students(ic_hash);
 
+-- One record per person, found by the keyed IC hash. Indexes on columns added
+-- after the first release (ic_hash, phone_norm, school_id) are created by
+-- worker/src/lib/migrate.js so this file stays valid for existing databases.
 CREATE TABLE IF NOT EXISTS parents (
   id TEXT PRIMARY KEY,
   full_name TEXT NOT NULL,
   email TEXT,
   phone TEXT,
+  phone_norm TEXT,
+  ic_hash TEXT,
+  ic_enc TEXT,
   ic_masked TEXT,
   address TEXT,
   user_id TEXT,
-  created_at TEXT NOT NULL
+  status TEXT NOT NULL DEFAULT 'active',
+  duplicate_reason TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_parents_user ON parents(user_id);
 
@@ -124,6 +133,7 @@ CREATE TABLE IF NOT EXISTS parent_students (
   parent_id TEXT NOT NULL REFERENCES parents(id),
   student_id TEXT NOT NULL REFERENCES students(id),
   relationship TEXT NOT NULL DEFAULT 'guardian',
+  school_id TEXT REFERENCES schools(id),
   UNIQUE (parent_id, student_id)
 );
 CREATE INDEX IF NOT EXISTS idx_parent_students_student ON parent_students(student_id);

@@ -1,13 +1,15 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { api } from '../../api';
 import { useAuth } from '../../auth';
 import { useI18n } from '../../i18n';
 import { useApi } from '../../hooks';
 import Icon from '../../components/Icon';
+import ParentPicker, { emptyParent, parentReady, takeDuplicateError } from '../../components/ParentPicker';
 import {
+  Alert,
   Badge,
   Card,
+  ConfirmDialog,
   DataTable,
   ErrorState,
   Field,
@@ -18,6 +20,7 @@ import {
   PageHeader,
   Select,
   StatusBadge,
+  Textarea,
   useToast,
 } from '../../components/ui';
 
@@ -29,6 +32,9 @@ export default function Parents() {
   const [selected, setSelected] = useState(null);
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [confirm, setConfirm] = useState(null);
   const { data: detail, loading: detailLoading, reload: reloadDetail } = useApi(selected ? `/parents/${selected}` : null, { enabled: !!selected });
 
   const parents = (data?.parents || []).filter((p) => {
@@ -37,6 +43,43 @@ export default function Parents() {
     return [p.full_name, p.email, p.phone].some((v) => String(v || '').toLowerCase().includes(q));
   });
   const isAdmin = user?.isSuper || user?.role === 'school_admin';
+
+  async function run(fn, message) {
+    setBusy(true);
+    try {
+      await fn();
+      push(message || t('common.success'));
+      return true;
+    } catch (err) {
+      push(err.message, 'danger');
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveEdit(payload) {
+    if (await run(() => api.patch(`/parents/${selected}`, payload), t('parentRecord.updated'))) {
+      setEditing(false);
+      await reloadDetail(true);
+      await reload(true);
+    }
+  }
+
+  // Server enforces Super Admin only; School Admin never sees these actions.
+  async function doConfirm() {
+    const action = confirm;
+    const ok = await run(
+      () => (action === 'delete' ? api.del(`/parents/${selected}`) : api.post(`/parents/${selected}/status`, { status: action })),
+      t(action === 'delete' ? 'parentRecord.deleted' : action === 'inactive' ? 'parentRecord.deactivated' : 'parentRecord.activated'),
+    );
+    setConfirm(null);
+    if (ok) {
+      if (action === 'delete') setSelected(null);
+      else await reloadDetail(true);
+      await reload(true);
+    }
+  }
 
   async function linkStudent(payload) {
     setBusy(true);
@@ -59,9 +102,9 @@ export default function Parents() {
         subtitle={t('parents.subtitle')}
         actions={
           isAdmin && (
-            <Link to="/app/users?role=parent" className="btn btn--primary btn--sm">
-              <Icon name="plus" size={16} /> {t('users.addUser')}
-            </Link>
+            <button type="button" className="btn btn--primary btn--sm" onClick={() => setAdding(true)}>
+              <Icon name="plus" size={16} /> {t('parentRecord.add')}
+            </button>
           )
         }
       />
@@ -87,8 +130,8 @@ export default function Parents() {
                 label: t('common.name'),
                 render: (r) => (
                   <span className="stack-cell">
-                    <strong>{r.full_name}</strong>
-                    <small>{r.ic_masked || '—'}</small>
+                    <strong>{r.full_name} {r.status === 'inactive' && <Badge tone="rose">{t('parentRecord.inactiveBadge')}</Badge>}</strong>
+                    <small>{r.ic_masked || '—'}{r.schools > 1 ? ` · ${t('parentRecord.schoolsCount', { n: r.schools })}` : ''}</small>
                   </span>
                 ),
               },
@@ -112,16 +155,47 @@ export default function Parents() {
 
       <Modal
         open={!!selected}
-        onClose={() => setSelected(null)}
+        onClose={() => {
+          setSelected(null);
+          setEditing(false);
+        }}
         title={detail?.parent?.full_name || t('parents.title')}
         subtitle={t('parents.childDetail')}
         size="lg"
-        footer={<button type="button" className="btn btn--ghost" onClick={() => setSelected(null)}>{t('common.close')}</button>}
+        footer={
+          <>
+            {detail?.canDeactivate && (
+              <>
+                <button type="button" className="btn btn--danger" onClick={() => setConfirm('delete')} disabled={busy}>
+                  {t('parentRecord.delete')}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--ghost"
+                  onClick={() => setConfirm(detail.parent.status === 'inactive' ? 'active' : 'inactive')}
+                  disabled={busy}
+                >
+                  {detail.parent.status === 'inactive' ? t('parentRecord.activate') : t('parentRecord.deactivate')}
+                </button>
+              </>
+            )}
+            {detail?.canEdit && !editing && (
+              <button type="button" className="btn btn--outline" onClick={() => setEditing(true)}>
+                <Icon name="edit" size={15} /> {t('common.edit')}
+              </button>
+            )}
+            <button type="button" className="btn btn--ghost" onClick={() => setSelected(null)}>{t('common.close')}</button>
+          </>
+        }
       >
         {detailLoading && !detail ? (
           <Loading />
         ) : detail ? (
           <>
+            {detail.parent.status === 'inactive' && <Alert tone="danger">{t('parentRecord.inactive')}</Alert>}
+            {editing ? (
+              <EditParentForm parent={detail.parent} busy={busy} onCancel={() => setEditing(false)} onSave={saveEdit} />
+            ) : (
             <KeyValue
               items={[
                 { label: t('common.name'), value: detail.parent.full_name },
@@ -131,6 +205,7 @@ export default function Parents() {
                 { label: t('common.address'), value: detail.parent.address || '—' },
               ]}
             />
+            )}
             <h4 className="detaillabel">{t('parents.children')}</h4>
             {!detail.children?.length ? (
               <p className="muted">{t('parents.noChildren')}</p>
@@ -155,7 +230,146 @@ export default function Parents() {
           </>
         ) : null}
       </Modal>
+
+      <AddParentModal
+        open={adding}
+        onClose={() => setAdding(false)}
+        onDone={async (res) => {
+          push(res?.linked ? t('parentRecord.linkedExisting') : t('parentRecord.created'));
+          setAdding(false);
+          await reload(true);
+        }}
+      />
+
+      <ConfirmDialog
+        open={!!confirm}
+        onClose={() => setConfirm(null)}
+        busy={busy}
+        danger={confirm !== 'active'}
+        title={confirm === 'delete' ? t('parentRecord.delete') : confirm === 'inactive' ? t('parentRecord.deactivate') : t('parentRecord.activate')}
+        message={confirm === 'delete' ? t('parentRecord.deleteConfirm') : confirm === 'inactive' ? t('parentRecord.deactivateConfirm') : t('parentRecord.activateConfirm')}
+        confirmLabel={confirm === 'delete' ? t('parentRecord.delete') : confirm === 'inactive' ? t('parentRecord.deactivate') : t('parentRecord.activate')}
+        onConfirm={doConfirm}
+      />
     </>
+  );
+}
+
+function EditParentForm({ parent, busy, onCancel, onSave }) {
+  const { t } = useI18n();
+  const [form, setForm] = useState({
+    fullName: parent.full_name || '',
+    email: parent.email || '',
+    phone: parent.phone || '',
+    address: parent.address || '',
+    ic: '',
+  });
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  return (
+    <div className="insetform">
+      <div className="formgrid">
+        <Field label={t('common.name')} required>
+          <Input value={form.fullName} onChange={(e) => set('fullName', e.target.value)} />
+        </Field>
+        <Field label={t('parentRecord.icLabel')} hint={parent.ic_masked ? t('parentRecord.icKeep', { ic: parent.ic_masked }) : t('parentRecord.icMissing')}>
+          <Input value={form.ic} inputMode="numeric" autoComplete="off" onChange={(e) => set('ic', e.target.value)} />
+        </Field>
+        <Field label={t('common.email')}>
+          <Input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} />
+        </Field>
+        <Field label={t('common.phone')}>
+          <Input value={form.phone} onChange={(e) => set('phone', e.target.value)} />
+        </Field>
+        <Field label={t('common.address')} className="formgrid__full">
+          <Textarea rows={2} value={form.address} onChange={(e) => set('address', e.target.value)} />
+        </Field>
+      </div>
+      <div className="buttonrow">
+        <button type="button" className="btn btn--ghost btn--sm" onClick={onCancel}>{t('common.cancel')}</button>
+        <button
+          type="button"
+          className="btn btn--primary btn--sm"
+          disabled={busy || !form.fullName.trim()}
+          onClick={() => {
+            const { ic, ...rest } = form;
+            onSave(ic ? { ...rest, ic } : rest);
+          }}
+        >
+          {busy && <span className="spinner spinner--light" />} {t('common.save')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AddParentModal({ open, onClose, onDone }) {
+  const { t } = useI18n();
+  const { push } = useToast();
+  const { data } = useApi('/lookups', { enabled: open });
+  const [studentId, setStudentId] = useState('');
+  const [relationship, setRelationship] = useState('guardian');
+  const [parent, setParent] = useState(emptyParent);
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    setBusy(true);
+    try {
+      const res = await api.post('/parents', {
+        studentId,
+        relationship,
+        ic: parent.ic,
+        parentId: parent.parentId || undefined,
+        fullName: parent.name,
+        email: parent.email,
+        phone: parent.phone,
+        createAnyway: parent.createAnyway || undefined,
+        duplicateReason: parent.createAnyway ? parent.duplicateReason : undefined,
+      });
+      setParent(emptyParent());
+      setStudentId('');
+      await onDone(res);
+    } catch (err) {
+      if (!takeDuplicateError(err, setParent)) push(err.message, 'danger');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={t('parentRecord.add')}
+      subtitle={t('parentRecord.addHint')}
+      size="lg"
+      footer={
+        <>
+          <button type="button" className="btn btn--ghost" onClick={onClose}>{t('common.cancel')}</button>
+          <button type="button" className="btn btn--primary" disabled={busy || !studentId || !parentReady(parent)} onClick={submit}>
+            {busy && <span className="spinner spinner--light" />} {t('common.save')}
+          </button>
+        </>
+      }
+    >
+      <div className="formgrid">
+        <Field label={t('common.selectStudent')} required>
+          <Select value={studentId} onChange={(e) => setStudentId(e.target.value)}>
+            <option value="">{t('common.select')}</option>
+            {(data?.students || []).map((s) => (
+              <option key={s.id} value={s.id}>{s.full_name} — {s.class_name || '—'}</option>
+            ))}
+          </Select>
+        </Field>
+        <Field label={t('students.relationship')}>
+          <Select value={relationship} onChange={(e) => setRelationship(e.target.value)}>
+            <option value="guardian">{t('students.guardian')}</option>
+            <option value="father">{t('students.father')}</option>
+            <option value="mother">{t('students.mother')}</option>
+          </Select>
+        </Field>
+      </div>
+      <ParentPicker value={parent} onChange={setParent} />
+    </Modal>
   );
 }
 

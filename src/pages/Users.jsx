@@ -5,6 +5,7 @@ import { useI18n } from '../i18n';
 import { useApi } from '../hooks';
 import Icon from '../components/Icon';
 import {
+  Alert,
   Badge,
   Card,
   Checkbox,
@@ -19,6 +20,7 @@ import {
   SearchBox,
   Select,
   StatusBadge,
+  Textarea,
   useToast,
 } from '../components/ui';
 
@@ -138,9 +140,11 @@ function UserModal({ modal, onClose, onSaved }) {
   const [busy, setBusy] = useState(false);
   const [pwOpen, setPwOpen] = useState(false);
   const [password, setPassword] = useState('');
+  const [dup, setDup] = useState(null); // { matches, parentId, createAnyway, reason }
 
   useEffect(() => {
     if (!modal) return;
+    setDup(null);
     if (modal.type === 'add') {
       setForm({
         fullName: '',
@@ -201,11 +205,16 @@ function UserModal({ modal, onClose, onSaved }) {
           role: form.role,
           schoolId: form.schoolId,
           studentIds: form.role === 'parent' ? studentIds : undefined,
+          parentId: form.role === 'parent' ? dup?.parentId || undefined : undefined,
+          createAnyway: form.role === 'parent' && dup?.createAnyway ? true : undefined,
+          duplicateReason: form.role === 'parent' && dup?.createAnyway ? dup.reason : undefined,
         });
         onSaved(res.temporaryPassword ? `${t('users.temporaryPassword')}: ${res.temporaryPassword}` : t('users.created'));
       }
     } catch (err) {
-      push(err.message, 'danger');
+      if (err.status === 409 && err.data?.code === 'duplicate_contact') {
+        setDup({ matches: err.data.matches || [], parentId: null, createAnyway: false, reason: '' });
+      } else push(err.message, 'danger');
     } finally {
       setBusy(false);
     }
@@ -225,9 +234,13 @@ function UserModal({ modal, onClose, onSaved }) {
     }
   }
 
+  // Only the Super Admin can deactivate a parent account.
+  const isParentAccount = Boolean(detail?.user?.parent_id) || (detail?.roles || []).some((r) => r.role === 'parent');
+  const canChangeStatus = isSuper || !isParentAccount;
+  const dupPending = dup && !dup.parentId && !(dup.createAnyway && dup.reason.trim().length >= 5);
   const canSubmit = isEdit
     ? form.fullName?.length > 0
-    : form.fullName?.length > 0 && /\S+@\S+\.\S+/.test(form.email || '') && (isSuper ? form.schoolId : true);
+    : form.fullName?.length > 0 && /\S+@\S+\.\S+/.test(form.email || '') && (isSuper ? form.schoolId : true) && !dupPending;
 
   return (
     <>
@@ -240,12 +253,12 @@ function UserModal({ modal, onClose, onSaved }) {
         footer={
           <>
             <button type="button" className="btn btn--ghost" onClick={onClose}>{t('common.cancel')}</button>
-            {isEdit && form.status === 'active' && (
+            {isEdit && canChangeStatus && form.status === 'active' && (
               <button type="button" className="btn btn--ghost text-rose" onClick={() => setForm((f) => ({ ...f, status: 'inactive' }))}>
                 {t('users.deactivate')}
               </button>
             )}
-            {isEdit && form.status === 'inactive' && (
+            {isEdit && canChangeStatus && form.status === 'inactive' && (
               <button type="button" className="btn btn--ghost" onClick={() => setForm((f) => ({ ...f, status: 'active' }))}>
                 {t('users.activate')}
               </button>
@@ -301,7 +314,7 @@ function UserModal({ modal, onClose, onSaved }) {
                     <Input type="text" value={form.password || ''} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="Mduik@2026" />
                   </Field>
                 </>
-              ) : (
+              ) : canChangeStatus && (
                 <Field label={t('users.accountStatus')}>
                   <Select value={form.status || 'active'} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}>
                     <option value="active">{t('common.active')}</option>
@@ -330,6 +343,39 @@ function UserModal({ modal, onClose, onSaved }) {
                     />
                   ))}
                 </div>
+              </div>
+            )}
+
+            {!isEdit && form.role === 'parent' && dup && (
+              <div className="parentpicker__dups">
+                <Alert tone="warning" title={t('parentRecord.dupTitle')}>{t('parentRecord.dupHint')}</Alert>
+                <ul className="duplist">
+                  {dup.matches.map((m) => (
+                    <li key={m.id}>
+                      <div>
+                        <strong>{m.full_name}</strong>
+                        <small>{[m.email, m.phone, m.ic_masked].filter(Boolean).join(' · ')}</small>
+                      </div>
+                      <button
+                        type="button"
+                        className={`btn btn--sm ${dup.parentId === m.id ? 'btn--primary' : 'btn--outline'}`}
+                        onClick={() => setDup((d) => ({ ...d, parentId: d.parentId === m.id ? null : m.id, createAnyway: false }))}
+                      >
+                        {t('parentRecord.linkExisting')}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                <Checkbox
+                  label={t('parentRecord.createAnyway')}
+                  checked={dup.createAnyway}
+                  onChange={(e) => setDup((d) => ({ ...d, createAnyway: e.target.checked, parentId: null }))}
+                />
+                {dup.createAnyway && (
+                  <Field label={t('parentRecord.reason')} hint={t('parentRecord.reasonHint')} required>
+                    <Textarea rows={2} value={dup.reason} onChange={(e) => setDup((d) => ({ ...d, reason: e.target.value }))} />
+                  </Field>
+                )}
               </div>
             )}
 

@@ -10,6 +10,7 @@ import reportRoutes from './routes/reports.js';
 import adminRoutes, { lapseOffers } from './routes/admin.js';
 import { runDaily } from './lib/finance.js';
 import { json } from './lib/util.js';
+import { ensureSchema } from './lib/migrate.js';
 
 const app = new Hono();
 
@@ -44,6 +45,11 @@ app.use('/api/*', async (c, next) => {
   await next();
 });
 
+app.use('/api/*', async (c, next) => {
+  await ensureSchema(c.env);
+  await next();
+});
+
 app.get('/api/health', async (c) => {
   const row = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM schools').first();
   return json({ ok: true, schools: row?.n ?? 0, r2: !!c.env.BUCKET, email: !!c.env.EMAIL });
@@ -73,6 +79,7 @@ async function scheduled(event, env, ctx) {
   ctx.waitUntil(
     (async () => {
       try {
+        await ensureSchema(env);
         const summary = await runDaily(env);
         const lapsed = await lapseOffers(env);
         console.log('Scheduled run', JSON.stringify({ ...summary, lapsed, cron: event.cron }));

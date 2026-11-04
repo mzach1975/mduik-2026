@@ -1,6 +1,16 @@
 import { Hono } from 'hono';
-import { authMiddleware, requireRoles, encryptIc, hashIc, hashPassword } from '../lib/auth.js';
-import { id, nowIso, today, readJson, bad, json, pageParams, pagingMeta, yearOf, monthOf, stripIc } from '../lib/util.js';
+import { authMiddleware, requireRoles, encryptIc, hashIc, hashPassword, revokeAllSessions } from '../lib/auth.js';
+import { id, nowIso, today, readJson, bad, json, pageParams, pagingMeta, yearOf, monthOf, stripIc, normalizeIc } from '../lib/util.js';
+import {
+  planParent,
+  planFailure,
+  commitParent,
+  linkParentToStudent,
+  findParentByIc,
+  parentInSchool,
+  publicParent,
+  normalizePhone,
+} from '../lib/parents.js';
 import { audit, auditView } from '../lib/audit.js';
 import { notify, notifyParentsOfStudent, subjectFor } from '../lib/notify.js';
 import { studentBalance, createInvoice, dueDateFor, generateRegistrationInvoices } from '../lib/finance.js';
@@ -82,16 +92,32 @@ records.get('/students/:id', staffOnly, async (c) => {
     .bind(studentId)
     .all();
   await auditView(c, 'student', studentId, student.full_name);
-  return json({ student: stripIc(student), parents: parents.results, invoices: invoices.results, payments: payments.results, balance, adjustments: adjustments.results });
+  return json({ student: stripIc(student), parents: parents.results.map(publicParent), invoices: invoices.results, payments: payments.results, balance, adjustments: adjustments.results });
 });
 
 records.post('/students', requireRoles('school_admin'), async (c) => {
   const auth = c.get('auth');
   const body = await readJson(c);
   if (!body.fullName) return bad('Nama pelajar diperlukan. / Student name is required.');
-  if (body.parentId && !(await parentUsableBySchool(c.env, body.parentId, auth.activeSchool))) {
-    return bad('Ibu bapa tidak dijumpai di sekolah ini. / Parent not found in this school.', 404);
-  }
+  const wantsParent = body.parentId || body.parentIc || body.parentName || body.parentEmail || body.parentPhone;
+  const parentPlan = wantsParent
+    ? await planParent(
+        c.env,
+        {
+          parentId: body.parentId || null,
+          ic: body.parentIc,
+          name: body.parentName,
+          email: body.parentEmail,
+          phone: body.parentPhone,
+          address: body.parentAddress || body.address,
+          createAnyway: body.createAnyway === true,
+          duplicateReason: body.duplicateReason,
+        },
+        { schoolId: auth.activeSchool },
+      )
+    : null;
+  const parentFailure = parentPlan && planFailure(parentPlan);
+  if (parentFailure) return parentFailure;
   const ic = body.ic ? await encryptIc(c.env, body.ic) : { enc: null, hash: null, masked: null };
   const plan = body.feePlanId
     ? await c.env.DB.prepare('SELECT * FROM fee_plans WHERE id = ?').bind(body.feePlanId).first()
@@ -125,23 +151,16 @@ records.post('/students', requireRoles('school_admin'), async (c) => {
       nowIso(),
     )
     .run();
-  let parentId = body.parentId || null;
-  if (!parentId && (body.parentEmail || body.parentPhone)) {
-    const parent = body.parentEmail
-      ? await c.env.DB.prepare('SELECT * FROM parents WHERE lower(email) = lower(?)').bind(body.parentEmail).first()
-      : null;
-    if (parent) parentId = parent.id;
-    else {
-      parentId = id('par');
-      await c.env.DB.prepare('INSERT INTO parents (id, full_name, email, phone, address, created_at) VALUES (?,?,?,?,?,?)')
-        .bind(parentId, body.parentName || '', body.parentEmail || '', body.parentPhone || '', body.address || '', nowIso())
-        .run();
+  let parentId = null;
+  if (parentPlan) {
+    const parent = await commitParent(c.env, parentPlan);
+    parentId = parent.id;
+    await linkParentToStudent(c.env, parentId, studentId, auth.activeSchool, body.relationship);
+    if (parentPlan.create) {
+      await audit(c, 'create', 'parent', parentId, {
+        after: { via: 'student', studentId, duplicateReason: parentPlan.create.duplicateReason, duplicateOf: parentPlan.create.duplicateOf },
+      });
     }
-  }
-  if (parentId) {
-    await c.env.DB.prepare("INSERT OR IGNORE INTO parent_students (id, parent_id, student_id, relationship) VALUES (?,?,?,'guardian')")
-      .bind(id('ps'), parentId, studentId)
-      .run();
   }
   await audit(c, 'create', 'student', studentId, { after: { fullName: body.fullName, parentId } });
   return json({ id: studentId }, 201);
@@ -204,19 +223,6 @@ records.post('/students/:id/tracking', requireRoles('school_admin'), async (c) =
   });
   return json({ ok: true, monthlyTracking: enabled ? 1 : 0, trackingStart });
 });
-
-/** A parent can be used by a school if they already have a child there, or no children yet. */
-async function parentUsableBySchool(env, parentId, schoolId) {
-  const row = await env.DB.prepare(
-    `SELECT (SELECT COUNT(*) FROM parents WHERE id = ?1) AS found,
-       (SELECT COUNT(*) FROM parent_students WHERE parent_id = ?1) AS linked,
-       (SELECT COUNT(*) FROM parent_students ps JOIN students s ON s.id = ps.student_id
-         WHERE ps.parent_id = ?1 AND s.school_id = ?2) AS here`,
-  )
-    .bind(parentId, schoolId)
-    .first();
-  return Boolean(row?.found) && (!row.linked || row.here > 0);
-}
 
 function nextMonthStart() {
   const d = new Date();
@@ -406,17 +412,58 @@ records.patch('/teachers/:id', requireRoles('school_admin'), async (c) => {
 });
 
 /* ------------------------------ Parents ------------------------------ */
+const superOnly = async (c, next) => {
+  if (!c.get('auth')?.isSuper) {
+    return bad('Hanya Pentadbir Super boleh memadam atau menyahaktifkan akaun ibu bapa. / Only the Super Admin can delete or deactivate a parent account.', 403);
+  }
+  return next();
+};
+
+const NOT_YOUR_PARENT =
+  'Anda hanya boleh mengemas kini ibu bapa yang mempunyai anak di sekolah ini. / You can only edit a parent who has a child at this school.';
+
 records.get('/parents', staffOnly, async (c) => {
   const auth = c.get('auth');
+  const q = String(c.req.query('q') || '').trim();
   const { results } = await c.env.DB.prepare(
-    `SELECT p.*, (SELECT COUNT(*) FROM parent_students ps JOIN students s ON s.id = ps.student_id WHERE ps.parent_id = p.id AND s.school_id = ?) AS children
-     FROM parents p WHERE p.id IN (
-       SELECT ps.parent_id FROM parent_students ps JOIN students s ON s.id = ps.student_id WHERE s.school_id = ?
-     ) ORDER BY p.full_name LIMIT 300`,
+    `SELECT p.*,
+       (SELECT COUNT(*) FROM parent_students ps JOIN students s ON s.id = ps.student_id
+        WHERE ps.parent_id = p.id AND (?1 IS NULL OR s.school_id = ?1)) AS children,
+       (SELECT COUNT(DISTINCT s.school_id) FROM parent_students ps JOIN students s ON s.id = ps.student_id
+        WHERE ps.parent_id = p.id) AS schools
+     FROM parents p
+     WHERE (?1 IS NULL OR p.id IN (SELECT ps.parent_id FROM parent_students ps JOIN students s ON s.id = ps.student_id WHERE s.school_id = ?1))
+       AND (?2 = '' OR p.full_name LIKE ?2 OR p.email LIKE ?2 OR p.phone LIKE ?2)
+     ORDER BY p.full_name LIMIT 300`,
   )
-    .bind(auth.activeSchool, auth.activeSchool)
+    .bind(auth.activeSchool || null, q ? `%${q}%` : '')
     .all();
-  return json({ parents: results });
+  return json({ parents: results.map(publicParent) });
+});
+
+/** IC search for the registration and parent forms. Only the keyed hash is queried. */
+records.get('/parents/lookup', requireRoles('school_admin'), async (c) => {
+  const auth = c.get('auth');
+  const ic = c.req.query('ic') || '';
+  if (normalizeIc(ic).length < 6) return bad('No. IC tidak sah. / Invalid IC number.');
+  const parent = await findParentByIc(c.env, ic);
+  await audit(c, 'ic_lookup', 'parent', parent?.id || null, { after: { matched: !!parent } });
+  if (!parent) return json({ match: null });
+  const { results: links } = await c.env.DB.prepare(
+    `SELECT s.id, s.full_name, s.class_name, s.school_id, sc.name AS school_name, ps.relationship
+     FROM parent_students ps JOIN students s ON s.id = ps.student_id JOIN schools sc ON sc.id = s.school_id
+     WHERE ps.parent_id = ? ORDER BY sc.name, s.full_name`,
+  )
+    .bind(parent.id)
+    .all();
+  const here = auth.isSuper ? links : links.filter((l) => l.school_id === auth.activeSchool);
+  return json({
+    match: {
+      ...publicParent(parent),
+      children: here,
+      linkedSchools: [...new Set(links.map((l) => l.school_name))],
+    },
+  });
 });
 
 records.get('/parents/:id', staffOnly, async (c) => {
@@ -432,44 +479,218 @@ records.get('/parents/:id', staffOnly, async (c) => {
   if (!children.some((ch) => ch.school_id === auth.activeSchool) && !auth.isSuper) return bad('Forbidden', 403);
   const visible = auth.isSuper ? children : children.filter((ch) => ch.school_id === auth.activeSchool);
   await auditView(c, 'parent', parent.id, parent.full_name);
-  return json({ parent, children: visible.map(stripIc) });
+  return json({
+    parent: publicParent(parent),
+    children: visible.map(stripIc),
+    canEdit: auth.isSuper || auth.roleInSchool === 'school_admin',
+    canDeactivate: auth.isSuper,
+  });
+});
+
+/** Manual creation. An IC match links the existing parent; an email/phone match needs "link" or a reason. */
+records.post('/parents', requireRoles('school_admin'), async (c) => {
+  const auth = c.get('auth');
+  const body = await readJson(c);
+  let student = null;
+  if (body.studentId) {
+    student = await c.env.DB.prepare('SELECT * FROM students WHERE id = ? AND school_id = ?').bind(body.studentId, auth.activeSchool).first();
+    if (!student) return bad('Pelajar tidak dijumpai. / Student not found.', 404);
+  } else if (!auth.isSuper) {
+    return bad('Pilih pelajar untuk dipautkan. / Choose a student to link.');
+  }
+  const plan = await planParent(
+    c.env,
+    {
+      parentId: body.parentId || null,
+      ic: body.ic,
+      name: body.fullName,
+      email: body.email,
+      phone: body.phone,
+      address: body.address,
+      createAnyway: body.createAnyway === true,
+      duplicateReason: body.duplicateReason,
+    },
+    { schoolId: auth.activeSchool, requireIc: !body.parentId },
+  );
+  const failure = planFailure(plan);
+  if (failure) return failure;
+  const parent = await commitParent(c.env, plan);
+  if (student) await linkParentToStudent(c.env, parent.id, student.id, auth.activeSchool, body.relationship);
+  if (plan.create) {
+    await audit(c, 'create', 'parent', parent.id, {
+      after: { via: 'manual', studentId: student?.id || null, duplicateReason: plan.create.duplicateReason, duplicateOf: plan.create.duplicateOf },
+    });
+  } else {
+    await audit(c, 'link', 'parent', parent.id, { after: { via: 'manual', studentId: student?.id || null, matchedByIc: !!plan.matchedByIc } });
+  }
+  return json({ id: parent.id, linked: !plan.create }, plan.create ? 201 : 200);
+});
+
+/** School Admin edits only parents with a child at their school. */
+records.patch('/parents/:id', requireRoles('school_admin'), async (c) => {
+  const auth = c.get('auth');
+  const parent = await c.env.DB.prepare('SELECT * FROM parents WHERE id = ?').bind(c.req.param('id')).first();
+  if (!parent) return bad('Not found', 404);
+  if (!auth.isSuper && !(await parentInSchool(c.env, parent.id, auth.activeSchool))) return bad(NOT_YOUR_PARENT, 403);
+  const body = await readJson(c);
+  const updates = {};
+  if (body.fullName !== undefined) {
+    if (!String(body.fullName).trim()) return bad('Nama diperlukan. / Name is required.');
+    updates.full_name = String(body.fullName).trim().slice(0, 160);
+  }
+  if (body.email !== undefined) {
+    const email = String(body.email).trim().slice(0, 160);
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return bad('E-mel tidak sah. / Invalid email.');
+    updates.email = email;
+  }
+  if (body.phone !== undefined) {
+    updates.phone = String(body.phone).trim().slice(0, 40);
+    updates.phone_norm = normalizePhone(updates.phone);
+  }
+  if (body.address !== undefined) updates.address = String(body.address).slice(0, 500);
+  if (body.ic) {
+    if (normalizeIc(body.ic).length < 6) return bad('No. IC tidak sah. / Invalid IC number.');
+    const ic = await encryptIc(c.env, body.ic);
+    const other = await c.env.DB.prepare('SELECT id FROM parents WHERE ic_hash = ? AND id != ?').bind(ic.hash, parent.id).first();
+    if (other) return bad('No. IC ini milik rekod ibu bapa lain. / This IC belongs to another parent record.', 409);
+    Object.assign(updates, { ic_hash: ic.hash, ic_enc: ic.enc, ic_masked: ic.masked });
+  }
+  if (!Object.keys(updates).length) return bad('Tiada perubahan. / Nothing to update.');
+  if (updates.email && parent.user_id && updates.email.toLowerCase() !== String(parent.email || '').toLowerCase()) {
+    const taken = await c.env.DB.prepare('SELECT id FROM users WHERE lower(email) = lower(?) AND id != ?').bind(updates.email, parent.user_id).first();
+    if (taken) return bad('E-mel sudah digunakan. / Email already in use.', 409);
+  }
+  const sets = Object.keys(updates).map((k) => `${k} = ?`).join(', ');
+  const stmts = [c.env.DB.prepare(`UPDATE parents SET ${sets}, updated_at = ? WHERE id = ?`).bind(...Object.values(updates), nowIso(), parent.id)];
+  if (updates.email && parent.user_id) stmts.push(c.env.DB.prepare('UPDATE users SET email = ? WHERE id = ?').bind(updates.email, parent.user_id));
+  await c.env.DB.batch(stmts);
+  const before = {};
+  const after = {};
+  for (const k of Object.keys(updates)) {
+    if (k === 'ic_hash' || k === 'ic_enc' || k === 'phone_norm') continue;
+    before[k] = parent[k];
+    after[k] = updates[k];
+  }
+  await audit(c, 'update', 'parent', parent.id, { before, after });
+  return json({ ok: true });
 });
 
 records.post('/parents/:id/link', requireRoles('school_admin'), async (c) => {
   const auth = c.get('auth');
-  const parent = await c.env.DB.prepare('SELECT * FROM parents WHERE id = ?').bind(c.req.param('id')).first();
-  if (!parent) return bad('Not found', 404);
   const body = await readJson(c);
   const student = await c.env.DB.prepare('SELECT * FROM students WHERE id = ? AND school_id = ?')
     .bind(body.studentId, auth.activeSchool)
     .first();
   if (!student) return bad('Student not found', 404);
-  if (!(await parentUsableBySchool(c.env, parent.id, auth.activeSchool))) {
-    return bad('Ibu bapa tidak dijumpai di sekolah ini. / Parent not found in this school.', 404);
-  }
-  await c.env.DB.prepare("INSERT OR IGNORE INTO parent_students (id, parent_id, student_id, relationship) VALUES (?,?,?,?)")
-    .bind(id('ps'), parent.id, student.id, body.relationship || 'guardian')
+  const plan = await planParent(
+    c.env,
+    { parentId: c.req.param('id'), ic: body.parentIc, email: body.email, phone: body.phone },
+    { schoolId: auth.activeSchool },
+  );
+  const failure = planFailure(plan);
+  if (failure) return failure;
+  await linkParentToStudent(c.env, plan.parent.id, student.id, auth.activeSchool, body.relationship);
+  await audit(c, 'link', 'parent', plan.parent.id, { after: { studentId: student.id } });
+  return json({ ok: true });
+});
+
+/** Ends (or restores) the parent's portal role. A login with other active roles stays open. */
+async function setParentLogin(env, parent, active) {
+  if (!parent.user_id) return;
+  await env.DB.prepare("UPDATE user_roles SET status = ?, ended_at = ? WHERE user_id = ? AND role = 'parent'")
+    .bind(active ? 'active' : 'inactive', active ? null : nowIso(), parent.user_id)
     .run();
-  await audit(c, 'link', 'parent', parent.id, { after: { studentId: student.id } });
+  if (active) {
+    await env.DB.prepare("UPDATE users SET status = 'active' WHERE id = ?").bind(parent.user_id).run();
+    return;
+  }
+  const other = await env.DB.prepare(
+    "SELECT 1 AS ok FROM user_roles WHERE user_id = ? AND role != 'parent' AND status = 'active' AND ended_at IS NULL LIMIT 1",
+  )
+    .bind(parent.user_id)
+    .first();
+  if (!other) await env.DB.prepare("UPDATE users SET status = 'inactive' WHERE id = ?").bind(parent.user_id).run();
+  await revokeAllSessions(env, parent.user_id);
+}
+
+records.post('/parents/:id/status', superOnly, async (c) => {
+  const parent = await c.env.DB.prepare('SELECT * FROM parents WHERE id = ?').bind(c.req.param('id')).first();
+  if (!parent) return bad('Not found', 404);
+  const body = await readJson(c);
+  if (!['active', 'inactive'].includes(body.status)) return bad('Status tidak sah. / Invalid status.');
+  await c.env.DB.prepare('UPDATE parents SET status = ?, updated_at = ? WHERE id = ?').bind(body.status, nowIso(), parent.id).run();
+  await setParentLogin(c.env, parent, body.status === 'active');
+  await audit(c, body.status === 'active' ? 'activate' : 'deactivate', 'parent', parent.id, {
+    before: { status: parent.status },
+    after: { status: body.status },
+  });
+  return json({ ok: true, status: body.status });
+});
+
+records.delete('/parents/:id', superOnly, async (c) => {
+  const parent = await c.env.DB.prepare('SELECT * FROM parents WHERE id = ?').bind(c.req.param('id')).first();
+  if (!parent) return bad('Not found', 404);
+  await setParentLogin(c.env, parent, false);
+  const stmts = [
+    c.env.DB.prepare('DELETE FROM parent_students WHERE parent_id = ?').bind(parent.id),
+    c.env.DB.prepare('DELETE FROM parents WHERE id = ?').bind(parent.id),
+  ];
+  if (parent.user_id) stmts.push(c.env.DB.prepare('UPDATE users SET parent_id = NULL WHERE id = ? AND parent_id = ?').bind(parent.user_id, parent.id));
+  await c.env.DB.batch(stmts);
+  await audit(c, 'delete', 'parent', parent.id, { before: { full_name: parent.full_name, ic_masked: parent.ic_masked } });
   return json({ ok: true });
 });
 
 /* --------------------------- Parent portal --------------------------- */
+/**
+ * One card per linked child. Each card carries its own school's balance, credit,
+ * next payment and open invoices; credit never offsets another school's balance.
+ */
 records.get('/portal/children', requireRoles('parent'), async (c) => {
   const auth = c.get('auth');
-  if (!auth.parent) return json({ children: [] });
-  const { results } = await c.env.DB.prepare(
+  if (!auth.parent) return json({ children: [], schools: [], totalOutstanding: 0 });
+  const { results: children } = await c.env.DB.prepare(
     `SELECT s.id, s.full_name, s.class_name, s.status, s.school_id, sc.name AS school_name, sc.category,
        (SELECT COALESCE(SUM(i.amount_cents - i.paid_cents - i.credited_cents - i.waived_cents),0)
-        FROM invoices i WHERE i.student_id = s.id AND i.status IN ('unpaid','partial')) AS outstanding,
-       (SELECT COALESCE(SUM(cr.remaining_cents),0) FROM credits cr WHERE cr.student_id = s.id) AS credit,
-       (SELECT MIN(i.due_date) FROM invoices i WHERE i.student_id = s.id AND i.status IN ('unpaid','partial')) AS next_due
+        FROM invoices i WHERE i.student_id = s.id AND i.school_id = s.school_id AND i.status IN ('unpaid','partial')) AS outstanding,
+       (SELECT COALESCE(SUM(cr.remaining_cents),0) FROM credits cr WHERE cr.student_id = s.id AND cr.school_id = s.school_id) AS credit
      FROM parent_students ps JOIN students s ON s.id = ps.student_id JOIN schools sc ON sc.id = s.school_id
-     WHERE ps.parent_id = ? ORDER BY s.full_name`,
+     WHERE ps.parent_id = ? ORDER BY sc.name, s.full_name`,
   )
     .bind(auth.parent.id)
     .all();
-  return json({ children: results });
+  const ids = children.map((ch) => ch.id);
+  const { results: open } = ids.length
+    ? await c.env.DB.prepare(
+        `SELECT id, student_id, school_id, number, type, period, due_date, status,
+           amount_cents, (amount_cents - paid_cents - credited_cents - waived_cents) AS outstanding_cents
+         FROM invoices WHERE student_id IN (${ids.map(() => '?').join(',')}) AND status IN ('unpaid','partial')
+         ORDER BY due_date ASC, issue_date ASC`,
+      )
+        .bind(...ids)
+        .all()
+    : { results: [] };
+  const cards = children.map((ch) => {
+    const invoices = open.filter((i) => i.student_id === ch.id && i.school_id === ch.school_id);
+    const next = invoices[0] || null;
+    return {
+      ...ch,
+      next_due: next?.due_date || null,
+      next_due_amount: next ? next.outstanding_cents : 0,
+      invoices: invoices.slice(0, 5),
+      invoice_count: invoices.length,
+    };
+  });
+  const bySchool = new Map();
+  for (const ch of cards) {
+    const row = bySchool.get(ch.school_id) || { school_id: ch.school_id, school_name: ch.school_name, outstanding: 0, credit: 0 };
+    row.outstanding += ch.outstanding;
+    row.credit += ch.credit;
+    bySchool.set(ch.school_id, row);
+  }
+  const schools = [...bySchool.values()];
+  const totalOutstanding = schools.reduce((sum, sc) => sum + sc.outstanding, 0);
+  return json({ children: cards, schools, totalOutstanding });
 });
 
 records.get('/portal/children/:id', requireRoles('parent'), async (c) => {
@@ -550,12 +771,20 @@ records.patch('/portal/contact', requireRoles('parent'), async (c) => {
   if (!auth.parent) return bad('Profil ibu bapa tidak dijumpai. / Parent profile not found.', 404);
   const body = await readJson(c);
   const updates = {};
-  for (const f of ['phone', 'address', 'email']) if (body[f] !== undefined) updates[f] = body[f];
+  for (const f of ['phone', 'address', 'email']) if (body[f] !== undefined && body[f] !== '') updates[f] = String(body[f]).trim().slice(0, f === 'address' ? 500 : 160);
   if (!Object.keys(updates).length) return bad('Tiada perubahan. / Nothing to update.');
-  const sets = Object.keys(updates).map((k) => `${k} = ?`).join(', ');
-  await c.env.DB.prepare(`UPDATE parents SET ${sets} WHERE id = ?`).bind(...Object.values(updates), auth.parent.id).run();
-  if (updates.email) await c.env.DB.prepare('UPDATE users SET email = ? WHERE id = ?').bind(updates.email, auth.user.id).run();
-  await audit(c, 'update', 'parent_contact', auth.parent.id, { after: updates });
+  if (updates.email) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(updates.email)) return bad('E-mel tidak sah. / Invalid email.');
+    const taken = await c.env.DB.prepare('SELECT id FROM users WHERE lower(email) = lower(?) AND id != ?').bind(updates.email, auth.user.id).first();
+    if (taken) return bad('E-mel sudah digunakan. / Email already in use.', 409);
+  }
+  const fields = { ...updates };
+  if (updates.phone !== undefined) fields.phone_norm = normalizePhone(updates.phone);
+  const sets = Object.keys(fields).map((k) => `${k} = ?`).join(', ');
+  const stmts = [c.env.DB.prepare(`UPDATE parents SET ${sets}, updated_at = ? WHERE id = ?`).bind(...Object.values(fields), nowIso(), auth.parent.id)];
+  if (updates.email) stmts.push(c.env.DB.prepare('UPDATE users SET email = ? WHERE id = ?').bind(updates.email, auth.user.id));
+  await c.env.DB.batch(stmts);
+  await audit(c, 'update', 'parent_contact', auth.parent.id, { before: { phone: auth.parent.phone, email: auth.parent.email, address: auth.parent.address }, after: updates });
   return json({ ok: true });
 });
 

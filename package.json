@@ -12,7 +12,8 @@
     "db:local": "wrangler d1 execute mduik-db --local --file=./schema.sql",
     "db:seed": "wrangler d1 execute mduik-db --local --file=./seed.sql",
     "db:remote": "wrangler d1 execute mduik-db --remote --file=./schema.sql",
-    "deploy": "vite build && wrangler deploy"
+    "deploy": "vite build && wrangler deploy",
+    "test": "node --test tests/"
   },
   "dependencies": {
     "hono": "^4.9.7",

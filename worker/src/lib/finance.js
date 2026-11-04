@@ -38,16 +38,16 @@ export function dueDateFor(year, month, day) {
   return `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
 
-/** Apply available credit to an invoice (earliest credit first). */
+/** Apply available credit to an invoice (earliest credit first). Credit is held per school and only pays that school's invoices. */
 export async function applyCreditsToInvoice(env, invoiceId) {
   const inv = await env.DB.prepare('SELECT * FROM invoices WHERE id = ?').bind(invoiceId).first();
   if (!inv || inv.status === 'waived') return 0;
   let outstanding = inv.amount_cents - inv.paid_cents - inv.credited_cents - inv.waived_cents;
   if (outstanding <= 0) return 0;
   const { results: credits } = await env.DB.prepare(
-    'SELECT * FROM credits WHERE student_id = ? AND remaining_cents > 0 ORDER BY created_at ASC',
+    'SELECT * FROM credits WHERE student_id = ? AND school_id = ? AND remaining_cents > 0 ORDER BY created_at ASC',
   )
-    .bind(inv.student_id)
+    .bind(inv.student_id, inv.school_id)
     .all();
   let applied = 0;
   for (const credit of credits) {

@@ -51,6 +51,12 @@ The system covers admissions and interviews, student/parent/teacher records, fee
 - Gregorian calendar only; no online payment
 - Students and applicants do not have login accounts
 - Parents can only see children linked to their account
+- One parent record per person, found by a keyed hash of the IC; a parent can link to children at several schools (the school is stored on each link)
+- Parent records and portal logins are created or linked only when the School Admin registers an accepted applicant; the public application form creates neither
+- A new IC whose email or phone already exists triggers a warning: link to the existing record, or create anyway with a reason (registration, manual entry and CSV import)
+- School Admin edits a parent only when one of the parent's children is at that school; only the Super Admin can delete or deactivate a parent (enforced by the API)
+- The parent portal shows one card per child with that school's balance, credit, next payment and open invoices; the total is the sum of the school balances
+- Credit is held per school and never pays another school's invoices; for a transfer covering several schools, each Bursar records only their school's share with the same bank reference
 
 ## Project structure
 

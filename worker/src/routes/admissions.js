@@ -4,6 +4,7 @@ import { id, nowIso, today, readJson, bad, json, yearOf, daysBetween, pageParams
 import { audit, auditView } from '../lib/audit.js';
 import { notify, notifyRoles, notifyParentsOfStudent, subjectFor } from '../lib/notify.js';
 import { createInvoice, dueDateFor, studentBalance } from '../lib/finance.js';
+import { planParent, planFailure, commitParent, linkParentToStudent, ensureParentLogin } from '../lib/parents.js';
 
 const admissions = new Hono();
 admissions.use('*', authMiddleware);
@@ -410,6 +411,24 @@ admissions.post('/applications/:id/register', requireRoles('school_admin'), asyn
     .bind(auth.activeSchool)
     .first();
 
+  // The parent is resolved before anything is written, so a duplicate warning leaves no partial registration.
+  const parentPlan = await planParent(
+    c.env,
+    {
+      parentId: body.parentId || null,
+      ic: body.parentIc,
+      name: body.parentName || app.parent_name,
+      email: body.parentEmail ?? app.parent_email,
+      phone: body.parentPhone ?? app.parent_phone,
+      address: body.parentAddress || body.address || app.address,
+      createAnyway: body.createAnyway === true,
+      duplicateReason: body.duplicateReason,
+    },
+    { schoolId: auth.activeSchool, requireIc: !body.parentId },
+  );
+  const parentFailure = planFailure(parentPlan);
+  if (parentFailure) return parentFailure;
+
   const existing = app.ic_hash
     ? await c.env.DB.prepare('SELECT * FROM students WHERE ic_hash = ? AND school_id = ?').bind(app.ic_hash, auth.activeSchool).first()
     : null;
@@ -463,31 +482,16 @@ admissions.post('/applications/:id/register', requireRoles('school_admin'), asyn
       .run();
   }
 
-  let parent = body.parentEmail || app.parent_email
-    ? await c.env.DB.prepare('SELECT * FROM parents WHERE lower(email) = lower(?)')
-        .bind(body.parentEmail || app.parent_email)
-        .first()
-    : null;
-  if (!parent) {
-    const parentId = id('par');
-    await c.env.DB.prepare(
-      'INSERT INTO parents (id, full_name, email, phone, ic_masked, address, created_at) VALUES (?,?,?,?,?,?,?)',
-    )
-      .bind(
-        parentId,
-        body.parentName || app.parent_name || '',
-        body.parentEmail || app.parent_email || '',
-        body.parentPhone || app.parent_phone || '',
-        null,
-        body.address || app.address || '',
-        nowIso(),
-      )
-      .run();
-    parent = { id: parentId };
+  const parent = await commitParent(c.env, parentPlan);
+  await linkParentToStudent(c.env, parent.id, studentId, auth.activeSchool, body.relationship);
+  const login = await ensureParentLogin(c.env, parent, auth.activeSchool, { appUrl: c.env.APP_URL || new URL(c.req.url).origin });
+  if (parentPlan.create) {
+    await audit(c, 'create', 'parent', parent.id, {
+      after: { via: 'registration', studentId, duplicateReason: parentPlan.create.duplicateReason, duplicateOf: parentPlan.create.duplicateOf },
+    });
+  } else {
+    await audit(c, 'link', 'parent', parent.id, { after: { via: 'registration', studentId, matchedByIc: !!parentPlan.matchedByIc } });
   }
-  await c.env.DB.prepare("INSERT OR IGNORE INTO parent_students (id, parent_id, student_id, relationship) VALUES (?,?,?,'guardian')")
-    .bind(id('ps'), parent.id, studentId)
-    .run();
 
   const year = yearOf(today());
   const dueDate = dueDateFor(year, school.reg_due_month, school.reg_due_day);
@@ -505,7 +509,7 @@ admissions.post('/applications/:id/register', requireRoles('school_admin'), asyn
 
   await c.env.DB.prepare("UPDATE applications SET status = 'registered' WHERE id = ?").bind(appId).run();
   await audit(c, 'register', 'student', studentId, { after: { applicationId: appId, invoice: invoice.number } });
-  return json({ studentId, invoice, parentId: parent.id, arrearsWarning }, 201);
+  return json({ studentId, invoice, parentId: parent.id, parentLinked: !parentPlan.create, parentLoginCreated: login.created, arrearsWarning }, 201);
 });
 
 admissions.get('/interviews', staffAdmissions, async (c) => {

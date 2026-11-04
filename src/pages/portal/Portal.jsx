@@ -31,6 +31,7 @@ export default function Portal() {
   const [busy, setBusy] = useState(false);
 
   const children = data?.children || [];
+  const schools = data?.schools || [];
   const applications = appData?.applications || [];
 
   async function respond(response) {
@@ -61,6 +62,26 @@ export default function Portal() {
 
       <Alert tone="info" title={t('portal.noOnlinePayment')}>{t('portal.contactSchool')}</Alert>
 
+      {children.length > 0 && (
+        <section className="portaltotal" aria-label={t('portal.totalOutstanding')}>
+          <div className="portaltotal__main">
+            <span>{t('portal.totalOutstanding')}</span>
+            <strong className={data.totalOutstanding > 0 ? 'text-rose' : ''}>{money(data.totalOutstanding)}</strong>
+          </div>
+          {schools.length > 1 && (
+            <ul className="portaltotal__schools">
+              {schools.map((sc) => (
+                <li key={sc.school_id}>
+                  <span>{sc.school_name}</span>
+                  <strong>{money(sc.outstanding)}</strong>
+                </li>
+              ))}
+            </ul>
+          )}
+          <small>{t('portal.perSchoolNote')}</small>
+        </section>
+      )}
+
       {!children.length ? (
         <Card>
           <p className="muted">{t('portal.noChildren')}</p>
@@ -69,11 +90,14 @@ export default function Portal() {
         <div className="childgrid">
           {children.map((child) => (
             <article className="childcard" key={child.id}>
+              <div className="childcard__school">
+                <Icon name="school" size={14} /> {child.school_name}
+              </div>
               <div className="childcard__head">
                 <span className="avatar avatar--teal">{child.full_name.split(' ').map((x) => x[0]).slice(0, 2).join('')}</span>
                 <div>
                   <strong>{child.full_name}</strong>
-                  <small>{child.class_name || '—'} · {child.school_name}</small>
+                  <small>{child.class_name || '—'}</small>
                 </div>
                 <StatusBadge status={child.status} />
               </div>
@@ -87,8 +111,27 @@ export default function Portal() {
                   <strong>{money(child.credit)}</strong>
                 </div>
               </div>
+              {child.invoices?.length > 0 ? (
+                <ul className="childcard__invoices">
+                  {child.invoices.map((inv) => (
+                    <li key={inv.id}>
+                      <span className="mono">{inv.number}</span>
+                      <span>{date(inv.due_date)}</span>
+                      <strong>{money(inv.outstanding_cents)}</strong>
+                    </li>
+                  ))}
+                  {child.invoice_count > child.invoices.length && (
+                    <li className="muted">{t('portal.moreInvoices', { n: child.invoice_count - child.invoices.length })}</li>
+                  )}
+                </ul>
+              ) : (
+                <p className="muted childcard__none">{t('portal.noOpenInvoices')}</p>
+              )}
               <div className="childcard__foot">
-                <span><Icon name="calendar" size={15} /> {t('parents.nextDue')}: {date(child.next_due)}</span>
+                <span>
+                  <Icon name="calendar" size={15} /> {t('portal.nextPayment')}:{' '}
+                  {child.next_due ? `${money(child.next_due_amount)} · ${date(child.next_due)}` : '—'}
+                </span>
                 <button type="button" className="btn btn--primary btn--sm" onClick={() => navigate(`/app/portal/${child.id}`)}>
                   {t('portal.viewChild')} <Icon name="arrowRight" size={14} />
                 </button>

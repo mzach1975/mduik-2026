@@ -304,12 +304,12 @@ finance.post('/refunds', staff, async (c) => {
   if (!body.reason || String(body.reason).trim().length < 3) return bad('Sebab diperlukan. / Reason is required.');
   const amount = readAmount(body);
   if (!amount) return bad('Jumlah tidak sah. / Invalid amount.');
-  const credit = await c.env.DB.prepare('SELECT * FROM credits WHERE student_id = ? AND remaining_cents > 0 ORDER BY created_at')
-    .bind(student.id)
+  const credit = await c.env.DB.prepare('SELECT * FROM credits WHERE student_id = ? AND school_id = ? AND remaining_cents > 0 ORDER BY created_at')
+    .bind(student.id, auth.activeSchool)
     .first();
   if (!credit) return bad('Tiada kredit untuk dipulangkan. / No credit available to refund.');
-  const available = await c.env.DB.prepare('SELECT COALESCE(SUM(remaining_cents),0) AS n FROM credits WHERE student_id = ?')
-    .bind(student.id)
+  const available = await c.env.DB.prepare('SELECT COALESCE(SUM(remaining_cents),0) AS n FROM credits WHERE student_id = ? AND school_id = ?')
+    .bind(student.id, auth.activeSchool)
     .first();
   if (amount > available.n) return bad('Jumlah melebihi kredit tersedia. / Amount exceeds available credit.');
   const refundId = id('ref');
@@ -333,15 +333,15 @@ finance.post('/refunds/:id/approve', staff, async (c) => {
   if (refund.requested_by === auth.user.id) {
     return bad('Pemohon tidak boleh meluluskan bayaran balik sendiri. / The requester cannot approve their own refund.', 403);
   }
-  const available = await c.env.DB.prepare('SELECT COALESCE(SUM(remaining_cents),0) AS n FROM credits WHERE student_id = ?')
-    .bind(refund.student_id)
+  const available = await c.env.DB.prepare('SELECT COALESCE(SUM(remaining_cents),0) AS n FROM credits WHERE student_id = ? AND school_id = ?')
+    .bind(refund.student_id, refund.school_id)
     .first();
   if (available.n < refund.amount_cents) return bad('Kredit tidak mencukupi. / Insufficient credit.');
   let toReduce = refund.amount_cents;
   const { results: credits } = await c.env.DB.prepare(
-    'SELECT * FROM credits WHERE student_id = ? AND remaining_cents > 0 ORDER BY created_at',
+    'SELECT * FROM credits WHERE student_id = ? AND school_id = ? AND remaining_cents > 0 ORDER BY created_at',
   )
-    .bind(refund.student_id)
+    .bind(refund.student_id, refund.school_id)
     .all();
   for (const cr of credits) {
     if (toReduce <= 0) break;
