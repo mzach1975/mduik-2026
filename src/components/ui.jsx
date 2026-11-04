@@ -271,23 +271,33 @@ export function Pagination({ page = 1, pageCount = 1, total, pageSize, onPage })
 
 export function Modal({ open, onClose, title, subtitle, children, footer, size = 'md', danger = false }) {
   const ref = useRef(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (e) => {
-      if (e.key === 'Escape') onClose?.();
+      if (e.key === 'Escape') onCloseRef.current?.();
     };
     document.addEventListener('keydown', onKey);
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    setTimeout(() => {
-      const focusable = ref.current?.querySelector('input, select, textarea, button');
+    const timer = setTimeout(() => {
+      const field = ref.current?.querySelector(
+        'input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled])',
+      );
+      const focusable = field || ref.current?.querySelector('button:not([disabled])');
       focusable?.focus?.();
     }, 30);
     return () => {
+      clearTimeout(timer);
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prev;
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   return (

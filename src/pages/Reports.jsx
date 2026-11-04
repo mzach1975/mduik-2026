@@ -58,7 +58,8 @@ export default function Reports() {
         render: (row) => {
           const v = row[col.key];
           if (v === null || v === undefined || v === '') return '—';
-          if (col.key.includes('_cents') || /\(RM\)/i.test(col.label)) return money(v);
+          if (col.money || col.key.includes('_cents') || /\(RM\)/i.test(col.label)) return money(v);
+          if (col.key === 'percent') return `${v}%`;
           if (col.key.endsWith('_at') || col.key.endsWith('_date')) return date(v);
           return String(v);
         },

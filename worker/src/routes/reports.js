@@ -121,9 +121,9 @@ reports.get('/:id', async (c) => {
         { key: 'ic_masked', label: 'IC' },
         { key: 'gender', label: 'Gender' },
         { key: 'phone', label: 'Phone' },
-        { key: 'monthly_fee_cents', label: 'Monthly fee', value: (r) => money(r.monthly_fee_cents) },
+        { key: 'monthly_fee_cents', label: 'Monthly fee (RM)', value: (r) => money(r.monthly_fee_cents) },
         { key: 'monthly_tracking', label: 'Tracking', value: (r) => (r.monthly_tracking ? 'On' : 'Off') },
-        { key: 'outstanding', label: 'Outstanding', value: (r) => money(r.outstanding) },
+        { key: 'outstanding', label: 'Outstanding (RM)', value: (r) => money(r.outstanding) },
         { key: 'status', label: 'Status' },
       ],
       rows: results,
@@ -174,7 +174,7 @@ reports.get('/:id', async (c) => {
         p.amount_cents, p.is_recovery, u.full_name AS recorded_by_name
        FROM payments p JOIN students s ON s.id = p.student_id LEFT JOIN receipts r ON r.id = p.receipt_id
        LEFT JOIN users u ON u.id = p.recorded_by
-       WHERE p.school_id = ? AND p.paid_at BETWEEN ? AND ? ORDER BY p.paid_at`,
+       WHERE p.school_id = ? AND p.paid_at BETWEEN ? AND ? AND (r.id IS NULL OR r.status != 'cancelled') ORDER BY p.paid_at`,
     )
       .bind(schoolId, from, to)
       .all();
@@ -309,7 +309,7 @@ reports.get('/:id', async (c) => {
         (SELECT COUNT(*) FROM students st WHERE st.school_id = s.id AND st.status = 'active') AS students,
         (SELECT COUNT(*) FROM students st WHERE st.school_id = s.id AND st.monthly_tracking = 1) AS tracking_on,
         (SELECT COUNT(*) FROM teachers t WHERE t.school_id = s.id AND t.status = 'active') AS teachers,
-        (SELECT COALESCE(SUM(p.amount_cents),0) FROM payments p WHERE p.school_id = s.id AND substr(p.paid_at,1,7) = ?) AS collected_month,
+        (SELECT COALESCE(SUM(p.amount_cents),0) FROM payments p WHERE p.school_id = s.id AND substr(p.paid_at,1,7) = ? AND (p.receipt_id IS NULL OR p.receipt_id NOT IN (SELECT id FROM receipts WHERE status = 'cancelled'))) AS collected_month,
         (SELECT COALESCE(SUM(i.amount_cents - i.paid_cents - i.credited_cents - i.waived_cents),0) FROM invoices i WHERE i.school_id = s.id AND i.status IN ('unpaid','partial')) AS outstanding
        FROM schools s ORDER BY s.state, s.name`,
     )
@@ -332,7 +332,18 @@ reports.get('/:id', async (c) => {
 
   const format = (c.req.query('format') || 'json').toLowerCase();
   await audit(c, 'view', 'report', reportId, { after: { format, from, to } });
-  if (format === 'json') return json({ report: reportId, ...def, from, to });
+  if (format === 'json') {
+    // Functions do not survive JSON, so apply display formatting here. Money
+    // columns stay in cents and are flagged for the page to format.
+    const isMoney = (col) => /_cents$/.test(col.key) || col.key === 'outstanding' || /\(RM\)/i.test(col.label);
+    const columns = def.columns.map(({ value, ...col }) => ({ ...col, money: isMoney(col) }));
+    const rows = def.rows.map((row) => {
+      const out = { ...row };
+      for (const col of def.columns) if (col.value && !isMoney(col)) out[col.key] = col.value(row);
+      return out;
+    });
+    return json({ report: reportId, ...def, columns, rows, from, to });
+  }
   if (format === 'csv') {
     return new Response(toCsv(def.rows, def.columns), {
       headers: downloadHeaders(`${reportId}-${to}.csv`, 'text/csv; charset=utf-8'),

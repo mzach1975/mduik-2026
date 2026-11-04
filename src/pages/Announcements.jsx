@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { useI18n } from '../i18n';
 import { useApi } from '../hooks';
@@ -61,6 +61,13 @@ export default function Announcements() {
   const { push } = useToast();
   const { data, loading, error, reload } = useApi('/announcements');
   const announcements = data?.announcements || [];
+
+  useEffect(() => {
+    document.title = `${t('announcements.title')} · MDUIK`;
+    return () => {
+      document.title = `${t('common.appName')} — ${t('common.appFull')}`;
+    };
+  }, [t]);
 
   const [tab, setTab] = useState('all');
   const [modal, setModal] = useState(null);

@@ -11,6 +11,7 @@ import {
   studentBalance,
   refreshInvoice,
   dueDateFor,
+  reversePayment,
 } from '../lib/finance.js';
 import { buildReceiptPdf, buildReportPdf, buildStatementPdf } from '../lib/pdf.js';
 
@@ -88,15 +89,36 @@ finance.get('/invoices/:id', staff, async (c) => {
 });
 
 /* ------------------------------ Payments ----------------------------- */
+const MAX_AMOUNT_CENTS = 100000000; // RM 1,000,000
+
+/** Whole cents between 1 and RM 1,000,000, from amountCents or a ringgit amount. */
+function readAmount(body) {
+  const raw = body.amountCents !== undefined && body.amountCents !== null && body.amountCents !== '' ? body.amountCents : null;
+  const value = raw !== null ? (typeof raw === 'number' || typeof raw === 'string' ? Number(raw) : NaN) : parseMoney(body.amount);
+  return Number.isInteger(value) && value > 0 && value <= MAX_AMOUNT_CENTS ? value : null;
+}
+
+function validDate(value) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`))
+    && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+}
+
 finance.post('/payments', staff, async (c) => {
   const auth = c.get('auth');
   const body = await readJson(c);
+  if (typeof body.studentId !== 'string' || !body.studentId) return bad('Pelajar diperlukan. / A student is required.');
   const student = await c.env.DB.prepare('SELECT * FROM students WHERE id = ? AND school_id = ?')
     .bind(body.studentId, auth.activeSchool)
     .first();
   if (!student) return bad('Pelajar tidak dijumpai. / Student not found.', 404);
-  const amountCents = body.amountCents ? Number(body.amountCents) : parseMoney(body.amount);
-  if (!amountCents || amountCents <= 0) return bad('Jumlah bayaran mesti lebih daripada sifar. / Payment amount must be greater than zero.');
+  const amountCents = readAmount(body);
+  if (!amountCents) return bad('Jumlah bayaran tidak sah (RM 0.01 hingga RM 1,000,000). / Invalid payment amount (RM 0.01 to RM 1,000,000).');
+  const paidAt = body.paidAt ? body.paidAt : today();
+  if (!validDate(paidAt)) return bad('Tarikh bayaran tidak sah. / Invalid payment date.');
+  if (paidAt > today()) return bad('Tarikh bayaran tidak boleh pada masa hadapan. / Payment date cannot be in the future.');
+  if (body.recoveryInvoiceId !== undefined && body.recoveryInvoiceId !== null && typeof body.recoveryInvoiceId !== 'string') {
+    return bad('Invois pemulihan tidak sah. / Invalid recovery invoice.');
+  }
   if (!['cash', 'bank'].includes(body.method)) return bad('Kaedah bayaran tidak sah. / Invalid payment method.');
   if (body.method === 'bank' && !body.bankRef) return bad('Rujukan bank diperlukan untuk pindahan. / Bank reference is required for bank transfers.');
   try {
@@ -106,7 +128,7 @@ finance.post('/payments', staff, async (c) => {
       amountCents,
       method: body.method,
       bankRef: body.bankRef || '',
-      paidAt: body.paidAt || today(),
+      paidAt,
       notes: body.notes || '',
       proofKey: body.proofKey || null,
       recordedBy: auth.user.id,
@@ -125,7 +147,8 @@ finance.post('/payments', staff, async (c) => {
       201,
     );
   } catch (err) {
-    return bad(err.message || 'Bayaran gagal direkodkan. / Payment could not be recorded.', 500);
+    console.error('record payment failed', err?.stack || err);
+    return bad(err.message === 'Student not found' ? 'Pelajar tidak dijumpai. / Student not found.' : 'Bayaran gagal direkodkan. / Payment could not be recorded.', err.message === 'Student not found' ? 404 : 500);
   }
 });
 
@@ -240,11 +263,20 @@ finance.post('/receipts/:id/cancel', requireRoles('school_admin'), async (c) => 
     .first();
   if (!receipt) return bad('Not found', 404);
   if (receipt.status === 'cancelled') return bad('Resit sudah dibatalkan. / Receipt already cancelled.');
+  let reversal;
+  try {
+    reversal = await reversePayment(c.env, receipt.payment_id);
+  } catch (err) {
+    return bad(err.message, err.status || 400);
+  }
   await c.env.DB.prepare("UPDATE receipts SET status = 'cancelled', cancel_reason = ?, cancelled_at = ? WHERE id = ?")
     .bind(body.reason, nowIso(), receipt.id)
     .run();
-  await audit(c, 'cancel', 'receipt', receipt.id, { before: { status: 'issued' }, after: { status: 'cancelled', reason: body.reason } });
-  return json({ ok: true });
+  await audit(c, 'cancel', 'receipt', receipt.id, {
+    before: { status: 'issued' },
+    after: { status: 'cancelled', reason: body.reason, reversedAllocations: reversal.allocations, creditVoided: reversal.creditVoided },
+  });
+  return json({ ok: true, ...reversal });
 });
 
 /* ------------------------------- Refunds ------------------------------ */
@@ -264,13 +296,14 @@ finance.get('/refunds', staff, async (c) => {
 finance.post('/refunds', staff, async (c) => {
   const auth = c.get('auth');
   const body = await readJson(c);
+  if (typeof body.studentId !== 'string' || !body.studentId) return bad('Pelajar diperlukan. / A student is required.');
   const student = await c.env.DB.prepare('SELECT * FROM students WHERE id = ? AND school_id = ?')
     .bind(body.studentId, auth.activeSchool)
     .first();
   if (!student) return bad('Pelajar tidak dijumpai. / Student not found.', 404);
   if (!body.reason || String(body.reason).trim().length < 3) return bad('Sebab diperlukan. / Reason is required.');
-  const amount = body.amountCents ? Number(body.amountCents) : parseMoney(body.amount);
-  if (!amount || amount <= 0) return bad('Jumlah tidak sah. / Invalid amount.');
+  const amount = readAmount(body);
+  if (!amount) return bad('Jumlah tidak sah. / Invalid amount.');
   const credit = await c.env.DB.prepare('SELECT * FROM credits WHERE student_id = ? AND remaining_cents > 0 ORDER BY created_at')
     .bind(student.id)
     .first();
@@ -455,12 +488,12 @@ finance.get('/summary', staff, async (c) => {
   const day = today();
   const month = monthOf(day);
   const collectedToday = await c.env.DB.prepare(
-    "SELECT COALESCE(SUM(amount_cents),0) AS n FROM payments WHERE school_id = ? AND paid_at = ?",
+    "SELECT COALESCE(SUM(amount_cents),0) AS n FROM payments WHERE school_id = ? AND paid_at = ? AND (receipt_id IS NULL OR receipt_id NOT IN (SELECT id FROM receipts WHERE status = 'cancelled'))",
   )
     .bind(auth.activeSchool, day)
     .first();
   const collectedMonth = await c.env.DB.prepare(
-    "SELECT COALESCE(SUM(amount_cents),0) AS n FROM payments WHERE school_id = ? AND substr(paid_at,1,7) = ?",
+    "SELECT COALESCE(SUM(amount_cents),0) AS n FROM payments WHERE school_id = ? AND substr(paid_at,1,7) = ? AND (receipt_id IS NULL OR receipt_id NOT IN (SELECT id FROM receipts WHERE status = 'cancelled'))",
   )
     .bind(auth.activeSchool, month)
     .first();
@@ -499,6 +532,9 @@ finance.post('/run-monthly', requireRoles('school_admin'), async (c) => {
   const auth = c.get('auth');
   const body = await readJson(c);
   const month = body.month || monthOf(today());
+  if (typeof month !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/.test(month) || Number(month.slice(0, 4)) < 2020 || Number(month.slice(0, 4)) > 2100) {
+    return bad('Bulan tidak sah (YYYY-MM). / Invalid month (YYYY-MM).');
+  }
   const result = await generateMonthlyInvoices(c.env, auth.activeSchool, month);
   await audit(c, 'generate', 'monthly_invoices', month, { after: { created: result.created.length } });
   return json({ created: result.created.length, month: result.month, dueDate: result.dueDate, skipped: result.skipped });
@@ -508,6 +544,7 @@ finance.post('/run-registration', requireRoles('school_admin'), async (c) => {
   const auth = c.get('auth');
   const body = await readJson(c);
   const year = Number(body.year || yearOf(today()));
+  if (!Number.isInteger(year) || year < 2020 || year > 2100) return bad('Tahun tidak sah. / Invalid year.');
   const result = await generateRegistrationInvoices(c.env, auth.activeSchool, year);
   await audit(c, 'generate', 'registration_invoices', String(year), { after: { created: result.created.length } });
   return json({ created: result.created.length, year, dueDate: result.dueDate });
@@ -642,7 +679,7 @@ finance.get('/ledger', staff, async (c) => {
     `SELECT p.paid_at AS date, COALESCE(r.number, p.id) AS ref, 'Payment' AS kind, p.method AS type, '' AS period,
        s.full_name AS student_name, 0 AS debit, p.amount_cents AS credit
      FROM payments p JOIN students s ON s.id = p.student_id LEFT JOIN receipts r ON r.id = p.receipt_id
-     WHERE p.school_id = ? AND p.paid_at BETWEEN ? AND ?`,
+     WHERE p.school_id = ? AND p.paid_at BETWEEN ? AND ? AND (r.id IS NULL OR r.status != 'cancelled')`,
   )
     .bind(auth.activeSchool, from, to)
     .all();

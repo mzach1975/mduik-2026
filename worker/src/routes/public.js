@@ -60,7 +60,9 @@ pub.post('/applications', async (c) => {
   const age = calculateAge(body.dob);
   const ageEligible = age !== null && age >= 4 && age <= 25;
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(body.parentEmail || '')) && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(body.email || body.parentEmail));
-  const documents = Array.isArray(body.documents) ? body.documents.slice(0, 10) : [];
+  const documents = Array.isArray(body.documents)
+    ? body.documents.filter((d) => typeof d === 'string' && d.length <= 80).slice(0, 10)
+    : [];
   const flags = {
     missingFields: missing,
     ageEligible,
@@ -108,8 +110,11 @@ pub.post('/applications', async (c) => {
     )
     .run();
   for (const docId of documents) {
-    await c.env.DB.prepare('UPDATE documents SET owner_id = ? WHERE id = ? AND owner_type = ?')
-      .bind(appId, docId, 'application_draft')
+    // Claim only unclaimed drafts, and tie them to the school so tenant checks apply.
+    await c.env.DB.prepare(
+      "UPDATE documents SET owner_id = ?, owner_type = 'application', school_id = ? WHERE id = ? AND owner_type = 'application_draft' AND owner_id = 'draft'",
+    )
+      .bind(appId, school.id, docId)
       .run();
   }
   const lang = body.language === 'en' ? 'en' : 'bm';

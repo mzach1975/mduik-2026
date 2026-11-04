@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { authMiddleware, requireRoles, encryptIc, hashIc } from '../lib/auth.js';
-import { id, nowIso, today, readJson, bad, json, yearOf, daysBetween, pageParams, pagingMeta } from '../lib/util.js';
+import { id, nowIso, today, readJson, bad, json, yearOf, daysBetween, pageParams, pagingMeta, stripIc } from '../lib/util.js';
 import { audit, auditView } from '../lib/audit.js';
 import { notify, notifyRoles, notifyParentsOfStudent, subjectFor } from '../lib/notify.js';
 import { createInvoice, dueDateFor, studentBalance } from '../lib/finance.js';
@@ -83,7 +83,11 @@ const ITEM_LIMITS = Object.fromEntries(RUBRIC.sections.flatMap((s) => s.items.ma
 function computeTotal(marks) {
   let total = 0;
   for (const [key, max] of Object.entries(ITEM_LIMITS)) {
-    const v = Number(marks[key] ?? 0);
+    const raw = marks[key];
+    if (raw === undefined || raw === null || raw === '') {
+      throw new Error('Semua markah rubrik diperlukan. / Every rubric mark is required.');
+    }
+    const v = Number(raw);
     if (!Number.isFinite(v) || v < 0) throw new Error(`Markah tidak sah untuk ${key}. / Invalid mark for ${key}.`);
     if (v > max) throw new Error(`Markah ${key} melebihi maksimum ${max}. / Mark for ${key} exceeds maximum ${max}.`);
     total += v;
@@ -93,7 +97,12 @@ function computeTotal(marks) {
 
 admissions.get('/rubric', (c) => json({ rubric: RUBRIC }));
 
-admissions.get('/applications', async (c) => {
+const ASSIGNED_APPS = `SELECT iv.application_id FROM interviews iv
+  JOIN interview_assessors ia ON ia.interview_id = iv.id WHERE ia.assessor_id = ?`;
+
+const staffAdmissions = requireRoles('school_admin', 'teacher');
+
+admissions.get('/applications', staffAdmissions, async (c) => {
   const auth = c.get('auth');
   const { page, pageSize, offset } = pageParams(c);
   const schoolId = c.req.query('schoolId') && auth.isSuper ? c.req.query('schoolId') : auth.activeSchool;
@@ -102,6 +111,10 @@ admissions.get('/applications', async (c) => {
   if (schoolId) {
     where.push('a.school_id = ?');
     binds.push(schoolId);
+  }
+  if (!auth.isSuper && auth.roleInSchool === 'teacher') {
+    where.push(`a.id IN (${ASSIGNED_APPS})`);
+    binds.push(auth.user.id);
   }
   const status = c.req.query('status');
   if (status) {
@@ -129,28 +142,45 @@ admissions.get('/applications', async (c) => {
   )
     .bind(...binds, pageSize, offset)
     .all();
-  return json({ applications: results, ...pagingMeta(count?.n || 0, page, pageSize) });
+  return json({ applications: results.map(stripIc), ...pagingMeta(count?.n || 0, page, pageSize) });
 });
 
-admissions.get('/applications/stats', async (c) => {
+admissions.get('/applications/stats', staffAdmissions, async (c) => {
   const auth = c.get('auth');
   const schoolId = c.req.query('schoolId') && auth.isSuper ? c.req.query('schoolId') : auth.activeSchool;
+  const where = [];
+  const binds = [];
+  if (schoolId) {
+    where.push('school_id = ?');
+    binds.push(schoolId);
+  }
+  if (!auth.isSuper && auth.roleInSchool === 'teacher') {
+    where.push(`id IN (${ASSIGNED_APPS})`);
+    binds.push(auth.user.id);
+  }
   const { results } = await c.env.DB.prepare(
-    `SELECT status, COUNT(*) AS n FROM applications WHERE school_id = ? GROUP BY status`,
+    `SELECT status, COUNT(*) AS n FROM applications ${where.length ? `WHERE ${where.join(' AND ')}` : ''} GROUP BY status`,
   )
-    .bind(schoolId)
+    .bind(...binds)
     .all();
   const byStatus = Object.fromEntries(results.map((r) => [r.status, r.n]));
   const total = results.reduce((s, r) => s + r.n, 0);
   return json({ byStatus, total });
 });
 
-admissions.get('/applications/:id', async (c) => {
+admissions.get('/applications/:id', staffAdmissions, async (c) => {
   const auth = c.get('auth');
   const appId = c.req.param('id');
   const app = await c.env.DB.prepare('SELECT * FROM applications WHERE id = ?').bind(appId).first();
   if (!app) return bad('Permohonan tidak dijumpai. / Application not found.', 404);
   if (!auth.isSuper && app.school_id !== auth.activeSchool) return bad('Forbidden', 403);
+  const isTeacher = !auth.isSuper && auth.roleInSchool === 'teacher';
+  if (isTeacher) {
+    const assigned = await c.env.DB.prepare(`SELECT 1 AS ok FROM (${ASSIGNED_APPS}) WHERE application_id = ?`)
+      .bind(auth.user.id, appId)
+      .first();
+    if (!assigned) return bad('Anda tidak ditugaskan untuk permohonan ini. / You are not assigned to this application.', 403);
+  }
   const interviews = await c.env.DB.prepare(
     'SELECT * FROM interviews WHERE application_id = ? ORDER BY scheduled_at DESC',
   )
@@ -177,8 +207,16 @@ admissions.get('/applications/:id', async (c) => {
   const avg = scores.results.length
     ? Math.round((scores.results.reduce((s, r) => s + r.total, 0) / scores.results.length) * 100) / 100
     : null;
+  if (isTeacher) {
+    // Blind scoring: a teacher sees other assessors' scores only after submitting their own.
+    for (const iv of interviews.results) {
+      if (!iv.scores.some((s) => s.assessor_id === auth.user.id)) {
+        iv.scores = [];
+      }
+    }
+  }
   await auditView(c, 'application', appId, app.reference);
-  return json({ application: app, interviews: interviews.results, decision, finalMark: avg, passMark: RUBRIC.passMark, belowPass: avg !== null && avg < RUBRIC.passMark });
+  return json({ application: stripIc(app), interviews: interviews.results, decision, finalMark: avg, passMark: RUBRIC.passMark, belowPass: avg !== null && avg < RUBRIC.passMark });
 });
 
 admissions.post('/applications/:id/schedule', requireRoles('school_admin'), async (c) => {
@@ -189,7 +227,24 @@ admissions.post('/applications/:id/schedule', requireRoles('school_admin'), asyn
     .first();
   if (!app) return bad('Not found', 404);
   const body = await readJson(c);
-  if (!body.scheduledAt) return bad('Tarikh temuduga diperlukan. / Interview date is required.');
+  if (typeof body.scheduledAt !== 'string' || !/^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?$/.test(body.scheduledAt) || Number.isNaN(Date.parse(body.scheduledAt))) {
+    return bad('Tarikh temuduga tidak sah. / A valid interview date is required.');
+  }
+  const assessors = Array.isArray(body.assessorIds) ? [...new Set(body.assessorIds.filter((x) => typeof x === 'string' && x))] : [];
+  if (assessors.length !== 2) {
+    return bad('Pilih dua penilai yang berbeza. / Choose two different assessors.');
+  }
+  const validAssessors = await c.env.DB.prepare(
+    `SELECT COUNT(DISTINCT u.id) AS n FROM users u
+     JOIN user_roles ur ON ur.user_id = u.id AND ur.school_id = ? AND ur.role IN ('teacher','school_admin')
+       AND ur.status = 'active' AND ur.ended_at IS NULL
+     WHERE u.status = 'active' AND u.id IN (?, ?)`,
+  )
+    .bind(auth.activeSchool, assessors[0], assessors[1])
+    .first();
+  if ((validAssessors?.n || 0) !== 2) {
+    return bad('Penilai mesti guru aktif di sekolah ini. / Assessors must be active teachers at this school.');
+  }
   const interviewId = id('itv');
   await c.env.DB.prepare(
     'INSERT INTO interviews (id, school_id, application_id, scheduled_at, mode, location, status, notes, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
@@ -207,7 +262,6 @@ admissions.post('/applications/:id/schedule', requireRoles('school_admin'), asyn
       nowIso(),
     )
     .run();
-  const assessors = Array.isArray(body.assessorIds) ? body.assessorIds.slice(0, 2) : [];
   for (const assessorId of assessors) {
     await c.env.DB.prepare('INSERT OR IGNORE INTO interview_assessors (id, interview_id, assessor_id) VALUES (?,?,?)')
       .bind(id('iva'), interviewId, assessorId)
@@ -255,6 +309,9 @@ admissions.post('/applications/:id/decision', requireRoles('school_admin'), asyn
     .bind(appId, auth.activeSchool)
     .first();
   if (!app) return bad('Not found', 404);
+  if (app.status === 'registered') {
+    return bad('Pemohon sudah didaftarkan; keputusan tidak boleh diubah. / The applicant is already registered; the decision cannot change.', 409);
+  }
   const body = await readJson(c);
   if (!['accepted', 'not_accepted', 'waiting_list'].includes(body.decision)) return bad('Keputusan tidak sah. / Invalid decision.');
   if (!body.reason || String(body.reason).trim().length < 3) return bad('Sebab keputusan diperlukan. / A reason is required.');
@@ -317,12 +374,13 @@ admissions.post('/applications/:id/offer-response', async (c) => {
   const app = await c.env.DB.prepare('SELECT * FROM applications WHERE id = ?').bind(appId).first();
   if (!app) return bad('Not found', 404);
   const isParent = auth.roleInSchool === 'parent' && auth.user.email && app.parent_email && auth.user.email.toLowerCase() === app.parent_email.toLowerCase();
-  if (!auth.isSuper && auth.roleInSchool !== 'school_admin' && !isParent) return bad('Forbidden', 403);
+  const isSchoolAdmin = auth.roleInSchool === 'school_admin' && app.school_id === auth.activeSchool;
+  if (!auth.isSuper && !isSchoolAdmin && !isParent) return bad('Forbidden', 403);
   const body = await readJson(c);
   if (!['accepted', 'declined'].includes(body.response)) return bad('Respons tidak sah. / Invalid response.');
   if (app.offer_status !== 'offered') return bad('Tiada tawaran aktif. / No active offer.');
   const lapsed = app.offer_deadline && app.offer_deadline < today();
-  if (lapsed && !auth.isSuper && auth.roleInSchool !== 'school_admin') return bad('Tawaran telah luput. / The offer has lapsed.');
+  if (lapsed && !auth.isSuper && !isSchoolAdmin) return bad('Tawaran telah luput. / The offer has lapsed.');
   const newStatus = body.response === 'accepted' ? 'accepted' : 'waiting_list';
   await c.env.DB.prepare('UPDATE applications SET status = ?, offer_status = ? WHERE id = ?')
     .bind(newStatus, body.response === 'accepted' ? 'accepted' : 'declined', appId)
@@ -374,6 +432,7 @@ admissions.post('/applications/:id/register', requireRoles('school_admin'), asyn
   const studentId = existing?.id || id('std');
   if (!existing) {
     const fee = Number(body.monthlyFeeCents ?? plan?.monthly_fee_cents ?? school.monthly_fee_cents);
+    if (!Number.isInteger(fee) || fee < 0 || fee > 100000000) return bad('Yuran bulanan tidak sah. / Invalid monthly fee.');
     await c.env.DB.prepare(
       `INSERT INTO students (id, school_id, full_name, ic_hash, ic_enc, ic_masked, dob, gender, class_name, address,
         phone, email, fee_plan_id, monthly_fee_cents, monthly_tracking, status, application_id, created_at)
@@ -449,7 +508,7 @@ admissions.post('/applications/:id/register', requireRoles('school_admin'), asyn
   return json({ studentId, invoice, parentId: parent.id, arrearsWarning }, 201);
 });
 
-admissions.get('/interviews', async (c) => {
+admissions.get('/interviews', staffAdmissions, async (c) => {
   const auth = c.get('auth');
   const mine = c.req.query('mine') === '1' || auth.roleInSchool === 'teacher';
   let sql = `SELECT iv.*, a.reference, a.student_name, a.category, a.status AS application_status,
@@ -467,7 +526,7 @@ admissions.get('/interviews', async (c) => {
   return json({ interviews: results });
 });
 
-admissions.get('/interviews/:id', async (c) => {
+admissions.get('/interviews/:id', staffAdmissions, async (c) => {
   const auth = c.get('auth');
   const interviewId = c.req.param('id');
   const interview = await c.env.DB.prepare(
@@ -494,6 +553,10 @@ admissions.get('/interviews/:id', async (c) => {
     .bind(interviewId)
     .all();
   const myScore = scores.results.find((s) => s.assessor_id === auth.user.id) || null;
+  if (auth.roleInSchool === 'teacher' && !auth.isSuper && !myScore) {
+    // Blind scoring: other assessors' scores stay hidden until this teacher submits.
+    scores.results = [];
+  }
   const finalMark = scores.results.length
     ? Math.round((scores.results.reduce((s, r) => s + r.total, 0) / scores.results.length) * 100) / 100
     : null;
@@ -520,6 +583,10 @@ admissions.post('/interviews/:id/score', requireRoles('teacher', 'school_admin')
     .bind(interviewId, auth.user.id)
     .first();
   if (!assigned) return bad('Anda tidak ditugaskan untuk temuduga ini. / You are not assigned to this interview.', 403);
+  const decided = await c.env.DB.prepare('SELECT 1 AS ok FROM decisions WHERE application_id = ? LIMIT 1')
+    .bind(interview.application_id)
+    .first();
+  if (decided) return bad('Keputusan telah dibuat; markah tidak boleh diubah. / A decision has been recorded; scores are locked.', 409);
   const body = await readJson(c);
   let total;
   try {

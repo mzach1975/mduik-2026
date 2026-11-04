@@ -498,7 +498,10 @@ function RegisterModal({ open, onClose, onSubmit, busy, app }) {
             type="button"
             className="btn btn--primary"
             disabled={busy}
-            onClick={() => onSubmit({ ...form, monthlyFee: monthlyFee ? Math.round(Number(monthlyFee) * 100) : undefined })}
+            onClick={() => {
+              const { monthlyFee: _ignored, ...rest } = form;
+              onSubmit({ ...rest, monthlyFeeCents: monthlyFee ? Math.round(Number(monthlyFee) * 100) : undefined });
+            }}
           >
             {busy && <span className="spinner spinner--light" />} {t('applications.registerStudent')}
           </button>

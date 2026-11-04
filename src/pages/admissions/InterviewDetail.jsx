@@ -69,7 +69,8 @@ export default function InterviewDetail() {
     setBusy(true);
     try {
       const payload = {};
-      for (const item of items) payload[item.key] = Number(marks[item.key] || 0);
+      // Blank items are sent as null so the server can ask for every mark.
+      for (const item of items) payload[item.key] = marks[item.key] === '' || marks[item.key] == null ? null : Number(marks[item.key]);
       await api.post(`/interviews/${id}/score`, {
         marks: payload,
         s6_time: marks.s6_time || '',

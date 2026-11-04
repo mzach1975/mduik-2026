@@ -216,3 +216,10 @@ export function chunks(arr, size) {
 }
 
 export { encoder };
+
+/** Remove encrypted/hashed IC fields from a row before it is sent to the client. */
+export function stripIc(row) {
+  if (!row) return row;
+  const { ic_enc, ic_hash, ...rest } = row;
+  return rest;
+}

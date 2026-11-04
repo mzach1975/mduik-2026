@@ -23,8 +23,8 @@ bucket_name = "mduik-docs"
 
 # Cloudflare Email Service binding. When absent, notifications are still
 # recorded in the portal and the email is queued in the notification log.
-# [[send_email]]
-# name = "EMAIL"
+[[send_email]]
+name = "EMAIL"
 
 [triggers]
 crons = ["0 18 * * *"]

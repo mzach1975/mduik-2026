@@ -249,7 +249,9 @@ export async function recordPayment(env, {
     if (inv) {
       const take = Math.min(remaining, inv.waived_cents);
       if (take > 0) {
-        await env.DB.prepare('UPDATE invoices SET waived_cents = waived_cents - ? WHERE id = ?').bind(take, inv.id).run();
+        await env.DB.prepare('UPDATE invoices SET waived_cents = waived_cents - ?, paid_cents = paid_cents + ? WHERE id = ?')
+          .bind(take, take, inv.id)
+          .run();
         await env.DB.prepare('INSERT INTO payment_allocations (id, payment_id, invoice_id, amount_cents) VALUES (?,?,?,?)')
           .bind(id('pal'), paymentId, inv.id, take)
           .run();
@@ -296,7 +298,7 @@ export async function recordPayment(env, {
     credit = { id: creditId, amount_cents: remaining };
   }
 
-  const receiptNumber = await nextNumber(env, schoolId, 'receipt', school?.receipt_prefix || 'RCP', yearOf(paidAt || today()));
+  const receiptNumber = await nextNumber(env, schoolId, 'receipt', school?.receipt_prefix || 'RCP', yearOf(today()));
   const receiptId = id('rct');
   await env.DB.prepare(
     'INSERT INTO receipts (id, school_id, payment_id, number, amount_cents, status, issued_at) VALUES (?,?,?,?,?,?,?)',
@@ -317,6 +319,44 @@ export async function recordPayment(env, {
   });
 
   return { payment, receipt, allocations, credit, student };
+}
+
+/**
+ * Reverse a payment when its receipt is cancelled: allocated amounts go back
+ * onto the invoices (recoveries go back to waived) and unused overpayment credit
+ * is voided. Refused when that credit has already been used or refunded.
+ */
+export async function reversePayment(env, paymentId) {
+  const payment = await env.DB.prepare('SELECT * FROM payments WHERE id = ?').bind(paymentId).first();
+  if (!payment) throw new Error('Payment not found');
+  const credit = await env.DB.prepare('SELECT * FROM credits WHERE payment_id = ?').bind(paymentId).first();
+  if (credit && credit.remaining_cents < credit.amount_cents) {
+    const err = new Error(
+      'Kredit daripada bayaran ini telah digunakan atau dibayar balik; resit tidak boleh dibatalkan. / Credit from this payment has already been used or refunded, so the receipt cannot be cancelled.',
+    );
+    err.status = 409;
+    throw err;
+  }
+  const { results: allocations } = await env.DB.prepare('SELECT * FROM payment_allocations WHERE payment_id = ?')
+    .bind(paymentId)
+    .all();
+  const stmts = [];
+  for (const a of allocations) {
+    if (payment.is_recovery) {
+      stmts.push(
+        env.DB.prepare('UPDATE invoices SET paid_cents = paid_cents - ?, waived_cents = waived_cents + ? WHERE id = ?')
+          .bind(a.amount_cents, a.amount_cents, a.invoice_id),
+        env.DB.prepare('UPDATE write_offs SET recovered_cents = MAX(0, recovered_cents - ?) WHERE school_id = ? AND invoice_ids LIKE ?')
+          .bind(a.amount_cents, payment.school_id, `%${a.invoice_id}%`),
+      );
+    } else {
+      stmts.push(env.DB.prepare('UPDATE invoices SET paid_cents = paid_cents - ? WHERE id = ?').bind(a.amount_cents, a.invoice_id));
+    }
+  }
+  if (credit) stmts.push(env.DB.prepare('UPDATE credits SET remaining_cents = 0 WHERE id = ?').bind(credit.id));
+  if (stmts.length) await env.DB.batch(stmts);
+  for (const invoiceId of new Set(allocations.map((a) => a.invoice_id))) await refreshInvoice(env, invoiceId);
+  return { allocations: allocations.length, creditVoided: credit ? credit.remaining_cents : 0 };
 }
 
 /** Compute outstanding balance and aging buckets for a student. */

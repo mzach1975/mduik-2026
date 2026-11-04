@@ -130,7 +130,13 @@ async function hmacKey(env) {
 
 export async function signToken(env, payload, hours = 10) {
   const header = { alg: 'HS256', typ: 'JWT' };
-  const body = { ...payload, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + hours * 3600 };
+  const body = {
+    ...payload,
+    jti: payload.jti || id('ses'),
+    ims: Date.now(), // issue time in ms, used for session revocation
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + hours * 3600,
+  };
   const h = b64url(enc.encode(JSON.stringify(header)));
   const p = b64url(enc.encode(JSON.stringify(body)));
   const key = await hmacKey(env);
@@ -182,7 +188,8 @@ export async function resolveAuth(env, token) {
   const db = env.DB;
   const user = await db.prepare('SELECT * FROM users WHERE id = ?').bind(payload.sub).first();
   if (!user || user.status !== 'active') return null;
-  const { results: roles } = await db
+  if (await isRevoked(env, payload)) return null;
+  const { results: allRoles } = await db
     .prepare(
       `SELECT ur.id, ur.school_id, ur.role, s.name AS school_name, s.category, s.status AS school_status
        FROM user_roles ur LEFT JOIN schools s ON s.id = ur.school_id
@@ -190,9 +197,11 @@ export async function resolveAuth(env, token) {
     )
     .bind(user.id)
     .all();
-  const isSuper = roles.some((r) => r.role === 'super_admin');
+  const isSuper = allRoles.some((r) => r.role === 'super_admin');
+  // Roles at suspended or inactive schools give no access (super admin is unaffected).
+  const roles = allRoles.filter((r) => !r.school_id || r.school_status === 'active' || isSuper);
+  if (!isSuper && allRoles.length > 0 && roles.length === 0) return null;
   let activeSchool = payload.sch || null;
-  if (isSuper && !activeSchool) activeSchool = null;
   if (!isSuper) {
     const schoolIds = [...new Set(roles.map((r) => r.school_id).filter(Boolean))];
     if (!activeSchool || !schoolIds.includes(activeSchool)) activeSchool = schoolIds[0] || null;
@@ -200,12 +209,15 @@ export async function resolveAuth(env, token) {
   const parent = user.parent_id
     ? await db.prepare('SELECT * FROM parents WHERE id = ?').bind(user.parent_id).first()
     : null;
+  const school = activeSchool ? await db.prepare('SELECT * FROM schools WHERE id = ?').bind(activeSchool).first() : null;
+  if (!school) activeSchool = null;
   return {
     user,
     roles,
     isSuper,
+    jti: payload.jti || null,
     activeSchool,
-    school: activeSchool ? await db.prepare('SELECT * FROM schools WHERE id = ?').bind(activeSchool).first() : null,
+    school,
     parent,
     roleInSchool: roles.find((r) => r.school_id === activeSchool)?.role || (isSuper ? 'super_admin' : null),
   };
@@ -261,20 +273,47 @@ export async function recordLoginAttempt(env, identifier, ip, success) {
     .run();
 }
 
-export async function isLockedOut(env, identifier) {
+/**
+ * Lockout: 5 failures for the same account from one IP, or 20 failures for the
+ * same account from any IP, within 15 minutes. Identifiers are lower-cased by
+ * the caller so case changes do not reset the counter.
+ */
+export async function isLockedOut(env, account, ip) {
   const since = new Date(Date.now() - 15 * 60 * 1000).toISOString();
   const row = await env.DB.prepare(
-    "SELECT COUNT(*) AS n FROM login_attempts WHERE identifier = ? AND success = 0 AND created_at > ?",
+    `SELECT COUNT(*) AS total, SUM(CASE WHEN ip = ? THEN 1 ELSE 0 END) AS from_ip
+     FROM login_attempts WHERE identifier = ? AND success = 0 AND created_at > ?`,
   )
-    .bind(identifier, since)
+    .bind(ip || '', account, since)
     .first();
-  if ((row?.n || 0) >= 5) return true;
-  const ipRow = await env.DB.prepare(
-    "SELECT COUNT(*) AS n FROM login_attempts WHERE ip = ? AND success = 0 AND created_at > ?",
+  return (row?.from_ip || 0) >= 5 || (row?.total || 0) >= 20;
+}
+
+/* ------------------------------------------------------------------ */
+/* Session revocation                                                  */
+/* ------------------------------------------------------------------ */
+async function isRevoked(env, payload) {
+  const row = await env.DB.prepare(
+    'SELECT 1 AS hit FROM session_revocations WHERE (jti IS NOT NULL AND jti = ?) OR (user_id = ? AND not_before > ?) LIMIT 1',
   )
-    .bind(identifier.split('|ip|')[1] || '', since)
+    .bind(payload.jti || '', payload.sub, payload.ims ?? (payload.iat || 0) * 1000)
     .first();
-  return false;
+  return Boolean(row);
+}
+
+/** End one session (logout). */
+export async function revokeSession(env, userId, jti) {
+  if (!jti) return;
+  await env.DB.prepare('INSERT INTO session_revocations (id, user_id, jti, created_at) VALUES (?,?,?,?)')
+    .bind(id('rev'), userId, jti, nowIso())
+    .run();
+}
+
+/** End every session of a user issued before now (password change, deactivation). */
+export async function revokeAllSessions(env, userId) {
+  await env.DB.prepare('INSERT INTO session_revocations (id, user_id, not_before, created_at) VALUES (?,?,?,?)')
+    .bind(id('rev'), userId, Date.now(), nowIso())
+    .run();
 }
 
 export function publicUser(auth) {

@@ -7,6 +7,8 @@ import {
   publicUser,
   recordLoginAttempt,
   isLockedOut,
+  revokeSession,
+  revokeAllSessions,
   hashIc,
   encryptIc,
   decryptIc,
@@ -25,7 +27,8 @@ auth.post('/login', async (c) => {
   const password = String(body.password || '');
   if (!identifier || !password) return bad('Sila masukkan e-mel/IC dan kata laluan. / Enter email/IC and password.');
   const ip = c.req.header('cf-connecting-ip') || '';
-  if (await isLockedOut(c.env, `${identifier}|ip|${ip}`)) {
+  const account = identifier.toLowerCase();
+  if (await isLockedOut(c.env, account, ip)) {
     return bad('Akaun dikunci sementara kerana terlalu banyak percubaan. Cuba lagi dalam 15 minit. / Account temporarily locked. Try again in 15 minutes.', 429);
   }
 
@@ -35,7 +38,7 @@ auth.post('/login', async (c) => {
     user = await c.env.DB.prepare('SELECT * FROM users WHERE ic_hash = ?').bind(icHash).first();
   }
   const ok = user ? await verifyPassword(password, user.password_hash) : false;
-  await recordLoginAttempt(c.env, `${identifier}|ip|${ip}`, ip, ok);
+  await recordLoginAttempt(c.env, account, ip, ok);
   if (!ok) return bad('Maklumat log masuk tidak sah. / Invalid login details.', 401);
   if (user.status !== 'active') return bad('Akaun dinyahaktifkan. / Account deactivated.', 403);
 
@@ -44,6 +47,18 @@ auth.post('/login', async (c) => {
   )
     .bind(user.id)
     .all();
+  if (!roles.length) return bad('Akaun dinyahaktifkan. / Account deactivated.', 403);
+  if (!roles.some((r) => r.role === 'super_admin')) {
+    const ids = [...new Set(roles.map((r) => r.school_id).filter(Boolean))];
+    if (ids.length) {
+      const active = await c.env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM schools WHERE status = 'active' AND id IN (${ids.map(() => '?').join(',')})`,
+      )
+        .bind(...ids)
+        .first();
+      if (!active?.n) return bad('Sekolah anda telah digantung. / Your school has been suspended.', 403);
+    }
+  }
   let schoolId = body.schoolId || null;
   const schoolIds = roles.map((r) => r.school_id).filter(Boolean);
   if (!roles.some((r) => r.role === 'super_admin')) {
@@ -62,6 +77,8 @@ auth.post('/login', async (c) => {
 });
 
 auth.post('/logout', async (c) => {
+  const session = await resolveAuth(c.env, getCookie(c, SESSION_COOKIE));
+  if (session) await revokeSession(c.env, session.user.id, session.jti);
   clearSession(c);
   return c.json({ ok: true });
 });
@@ -86,6 +103,10 @@ auth.post('/context', async (c) => {
   if (!session.isSuper && !session.roles.some((r) => r.school_id === schoolId)) {
     return bad('Anda bukan ahli sekolah ini. / You are not a member of this school.', 403);
   }
+  if (schoolId && !(await c.env.DB.prepare('SELECT 1 AS ok FROM schools WHERE id = ?').bind(schoolId).first())) {
+    return bad('Sekolah tidak dijumpai. / School not found.', 404);
+  }
+  if (session.jti) await revokeSession(c.env, session.user.id, session.jti);
   const token = await setSession(c, session.user, schoolId);
   const renewed = await resolveAuth(c.env, token);
   return c.json({ user: publicUser(renewed) });
@@ -124,8 +145,10 @@ auth.post('/change-password', async (c) => {
   }
   const hash = await hashPassword(body.newPassword);
   await c.env.DB.prepare('UPDATE users SET password_hash = ? WHERE id = ?').bind(hash, session.user.id).run();
+  await revokeAllSessions(c.env, session.user.id);
+  await setSession(c, session.user, session.activeSchool);
   await audit(c, 'change_password', 'user', session.user.id);
-  return json({ ok: true });
+  return c.json({ ok: true }); // c.json keeps the renewed session cookie
 });
 
 auth.post('/forgot', async (c) => {
@@ -142,7 +165,9 @@ auth.post('/forgot', async (c) => {
       .run();
     const appUrl = c.env.APP_URL || new URL(c.req.url).origin;
     const link = `${appUrl}/reset-password?token=${token}`;
-    if (c.env.EMAIL) {
+    if (!c.env.EMAIL) {
+      console.error('Password reset requested but the EMAIL binding is not configured.');
+    } else {
       try {
         await c.env.EMAIL.send({
           to: user.email,
@@ -151,10 +176,11 @@ auth.post('/forgot', async (c) => {
           text: `Klik pautan ini untuk menetapkan semula kata laluan anda (sah 1 jam): ${link}\n\nClick this link to reset your password (valid 1 hour): ${link}`,
         });
       } catch (err) {
-        console.error('reset email failed', err?.message);
+        console.error('reset email failed', err?.code, err?.message);
       }
     }
-    return json({ ok: true, devLink: c.env.EMAIL ? undefined : link });
+    // The link is only returned when explicitly enabled for local development.
+    return json({ ok: true, devLink: c.env.DEV_RESET_LINKS === '1' ? link : undefined });
   }
   return json({ ok: true });
 });
@@ -170,6 +196,7 @@ auth.post('/reset', async (c) => {
   const hash = await hashPassword(body.password);
   await c.env.DB.prepare('UPDATE users SET password_hash = ? WHERE id = ?').bind(hash, data.userId).run();
   await c.env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(`reset:${token}`).run();
+  await revokeAllSessions(c.env, data.userId);
   return json({ ok: true });
 });
 

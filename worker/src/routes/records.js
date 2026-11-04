@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { authMiddleware, requireRoles, encryptIc, hashIc, hashPassword } from '../lib/auth.js';
-import { id, nowIso, today, readJson, bad, json, pageParams, pagingMeta, yearOf, monthOf } from '../lib/util.js';
+import { id, nowIso, today, readJson, bad, json, pageParams, pagingMeta, yearOf, monthOf, stripIc } from '../lib/util.js';
 import { audit, auditView } from '../lib/audit.js';
 import { notify, notifyParentsOfStudent, subjectFor } from '../lib/notify.js';
 import { studentBalance, createInvoice, dueDateFor, generateRegistrationInvoices } from '../lib/finance.js';
@@ -43,7 +43,7 @@ records.get('/students', staffOnly, async (c) => {
   )
     .bind(...binds, pageSize, offset)
     .all();
-  return json({ students: results, ...pagingMeta(count?.n || 0, page, pageSize) });
+  return json({ students: results.map(stripIc), ...pagingMeta(count?.n || 0, page, pageSize) });
 });
 
 records.get('/students/classes', staffOnly, async (c) => {
@@ -82,13 +82,16 @@ records.get('/students/:id', staffOnly, async (c) => {
     .bind(studentId)
     .all();
   await auditView(c, 'student', studentId, student.full_name);
-  return json({ student, parents: parents.results, invoices: invoices.results, payments: payments.results, balance, adjustments: adjustments.results });
+  return json({ student: stripIc(student), parents: parents.results, invoices: invoices.results, payments: payments.results, balance, adjustments: adjustments.results });
 });
 
 records.post('/students', requireRoles('school_admin'), async (c) => {
   const auth = c.get('auth');
   const body = await readJson(c);
   if (!body.fullName) return bad('Nama pelajar diperlukan. / Student name is required.');
+  if (body.parentId && !(await parentUsableBySchool(c.env, body.parentId, auth.activeSchool))) {
+    return bad('Ibu bapa tidak dijumpai di sekolah ini. / Parent not found in this school.', 404);
+  }
   const ic = body.ic ? await encryptIc(c.env, body.ic) : { enc: null, hash: null, masked: null };
   const plan = body.feePlanId
     ? await c.env.DB.prepare('SELECT * FROM fee_plans WHERE id = ?').bind(body.feePlanId).first()
@@ -117,7 +120,7 @@ records.post('/students', requireRoles('school_admin'), async (c) => {
       plan?.id || null,
       Number(body.monthlyFeeCents ?? plan?.monthly_fee_cents ?? auth.school.monthly_fee_cents),
       body.monthlyTracking ? 1 : 0,
-      body.monthlyTracking ? monthOf(today()) : null,
+      body.monthlyTracking ? nextMonthStart() : null,
       body.status || 'active',
       nowIso(),
     )
@@ -202,6 +205,19 @@ records.post('/students/:id/tracking', requireRoles('school_admin'), async (c) =
   return json({ ok: true, monthlyTracking: enabled ? 1 : 0, trackingStart });
 });
 
+/** A parent can be used by a school if they already have a child there, or no children yet. */
+async function parentUsableBySchool(env, parentId, schoolId) {
+  const row = await env.DB.prepare(
+    `SELECT (SELECT COUNT(*) FROM parents WHERE id = ?1) AS found,
+       (SELECT COUNT(*) FROM parent_students WHERE parent_id = ?1) AS linked,
+       (SELECT COUNT(*) FROM parent_students ps JOIN students s ON s.id = ps.student_id
+         WHERE ps.parent_id = ?1 AND s.school_id = ?2) AS here`,
+  )
+    .bind(parentId, schoolId)
+    .first();
+  return Boolean(row?.found) && (!row.linked || row.here > 0);
+}
+
 function nextMonthStart() {
   const d = new Date();
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)).toISOString().slice(0, 7);
@@ -272,8 +288,8 @@ records.post('/students/:id/adjustments', requireRoles('bursar', 'school_admin')
   if (!student) return bad('Not found', 404);
   const body = await readJson(c);
   if (!body.reason) return bad('Sebab diperlukan. / A reason is required.');
-  const newRate = Number(body.newRateCents);
-  if (!Number.isFinite(newRate) || newRate < 0) return bad('Kadar tidak sah. / Invalid rate.');
+  const newRate = body.newRateCents === null || body.newRateCents === '' || body.newRateCents === undefined ? NaN : Number(body.newRateCents);
+  if (!Number.isInteger(newRate) || newRate < 0 || newRate > 100000000) return bad('Kadar tidak sah. / Invalid rate.');
   const adjId = id('adj');
   await c.env.DB.prepare(
     `INSERT INTO fee_adjustments (id, school_id, student_id, old_rate_cents, new_rate_cents, reason, status, requested_by, created_at)
@@ -317,8 +333,9 @@ records.post('/adjustments/:id/reject', requireRoles('school_admin'), async (c) 
     .bind(c.req.param('id'), auth.activeSchool)
     .first();
   if (!adj) return bad('Not found', 404);
+  if (adj.status !== 'pending') return bad('Permohonan sudah diproses. / Request already processed.');
   const body = await readJson(c);
-  await c.env.DB.prepare("UPDATE fee_adjustments SET status = 'rejected', approved_by = ? WHERE id = ?")
+  await c.env.DB.prepare("UPDATE fee_adjustments SET status = 'rejected', approved_by = ? WHERE id = ? AND status = 'pending'")
     .bind(auth.user.id, adj.id)
     .run();
   await audit(c, 'reject', 'fee_adjustment', adj.id, { after: { reason: body.reason || '' } });
@@ -413,8 +430,9 @@ records.get('/parents/:id', staffOnly, async (c) => {
     .bind(parent.id)
     .all();
   if (!children.some((ch) => ch.school_id === auth.activeSchool) && !auth.isSuper) return bad('Forbidden', 403);
+  const visible = auth.isSuper ? children : children.filter((ch) => ch.school_id === auth.activeSchool);
   await auditView(c, 'parent', parent.id, parent.full_name);
-  return json({ parent, children });
+  return json({ parent, children: visible.map(stripIc) });
 });
 
 records.post('/parents/:id/link', requireRoles('school_admin'), async (c) => {
@@ -426,6 +444,9 @@ records.post('/parents/:id/link', requireRoles('school_admin'), async (c) => {
     .bind(body.studentId, auth.activeSchool)
     .first();
   if (!student) return bad('Student not found', 404);
+  if (!(await parentUsableBySchool(c.env, parent.id, auth.activeSchool))) {
+    return bad('Ibu bapa tidak dijumpai di sekolah ini. / Parent not found in this school.', 404);
+  }
   await c.env.DB.prepare("INSERT OR IGNORE INTO parent_students (id, parent_id, student_id, relationship) VALUES (?,?,?,?)")
     .bind(id('ps'), parent.id, student.id, body.relationship || 'guardian')
     .run();
@@ -472,7 +493,7 @@ records.get('/portal/children/:id', requireRoles('parent'), async (c) => {
     .all();
   const balance = await studentBalance(c.env, studentId);
   await auditView(c, 'student_portal', studentId, student.full_name);
-  return json({ student, invoices: invoices.results, payments: payments.results, balance });
+  return json({ student: stripIc(student), invoices: invoices.results, payments: payments.results, balance });
 });
 
 records.get('/portal/applications', requireRoles('parent'), async (c) => {

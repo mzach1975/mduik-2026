@@ -21,7 +21,7 @@ dashboard.get('/dashboard', async (c) => {
         (SELECT COUNT(*) FROM students st WHERE st.school_id = s.id AND st.monthly_tracking = 1) AS tracking_on,
         (SELECT COUNT(*) FROM teachers t WHERE t.school_id = s.id AND t.status = 'active') AS teachers,
         (SELECT COUNT(*) FROM applications a WHERE a.school_id = s.id) AS applications,
-        (SELECT COALESCE(SUM(p.amount_cents),0) FROM payments p WHERE p.school_id = s.id AND substr(p.paid_at,1,7) = ?) AS collected_month,
+        (SELECT COALESCE(SUM(p.amount_cents),0) FROM payments p WHERE p.school_id = s.id AND substr(p.paid_at,1,7) = ? AND (p.receipt_id IS NULL OR p.receipt_id NOT IN (SELECT id FROM receipts WHERE status = 'cancelled'))) AS collected_month,
         (SELECT COALESCE(SUM(i.amount_cents - i.paid_cents - i.credited_cents - i.waived_cents),0) FROM invoices i WHERE i.school_id = s.id AND i.status IN ('unpaid','partial')) AS outstanding
        FROM schools s ORDER BY s.name`,
     )
@@ -96,8 +96,8 @@ dashboard.get('/dashboard', async (c) => {
       (SELECT COUNT(*) FROM students WHERE school_id = ? AND monthly_tracking = 1) AS tracking_on,
       (SELECT COUNT(*) FROM students WHERE school_id = ? AND monthly_tracking = 0 AND status = 'active') AS tracking_off,
       (SELECT COUNT(*) FROM teachers WHERE school_id = ? AND status = 'active') AS teachers,
-      (SELECT COALESCE(SUM(amount_cents),0) FROM payments WHERE school_id = ? AND substr(paid_at,1,7) = ?) AS collected_month,
-      (SELECT COALESCE(SUM(amount_cents),0) FROM payments WHERE school_id = ? AND paid_at = ?) AS collected_today,
+      (SELECT COALESCE(SUM(amount_cents),0) FROM payments WHERE school_id = ? AND substr(paid_at,1,7) = ? AND (receipt_id IS NULL OR receipt_id NOT IN (SELECT id FROM receipts WHERE status = 'cancelled'))) AS collected_month,
+      (SELECT COALESCE(SUM(amount_cents),0) FROM payments WHERE school_id = ? AND paid_at = ? AND (receipt_id IS NULL OR receipt_id NOT IN (SELECT id FROM receipts WHERE status = 'cancelled'))) AS collected_today,
       (SELECT COALESCE(SUM(amount_cents - paid_cents - credited_cents - waived_cents),0) FROM invoices WHERE school_id = ? AND status IN ('unpaid','partial')) AS outstanding,
       (SELECT COUNT(*) FROM invoices WHERE school_id = ? AND status IN ('unpaid','partial')) AS open_invoices,
       (SELECT COUNT(*) FROM refunds WHERE school_id = ? AND status = 'pending') AS pending_refunds,

@@ -473,3 +473,16 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- Revoked sessions. A row with jti ends one session (logout); a row with
+-- not_before ends every session of the user issued before that time
+-- (password change/reset, deactivation). Times are epoch milliseconds.
+CREATE TABLE IF NOT EXISTS session_revocations (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  jti TEXT,
+  not_before INTEGER,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_revocations_user ON session_revocations(user_id);
+CREATE INDEX IF NOT EXISTS idx_session_revocations_jti ON session_revocations(jti);

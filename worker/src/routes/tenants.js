@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { authMiddleware, requireRoles, hashPassword, encryptIc, hashIc, publicUser } from '../lib/auth.js';
+import { authMiddleware, requireRoles, hashPassword, encryptIc, hashIc, publicUser, revokeAllSessions } from '../lib/auth.js';
 import { id, nowIso, readJson, bad, json, slugify, pick, normalizeIc } from '../lib/util.js';
 import { audit } from '../lib/audit.js';
 import { notify } from '../lib/notify.js';
@@ -202,10 +202,15 @@ tenants.post('/school-settings/fee-plans', requireRoles('school_admin'), async (
 tenants.get('/users', requireRoles('school_admin'), async (c) => {
   const auth = c.get('auth');
   const q = c.req.query('q');
-  let sql = `SELECT u.id, u.email, u.full_name, u.phone, u.ic_masked, u.language, u.status, u.last_login_at, u.created_at,
+  // Super admin sees the account status; a school admin sees the status of the
+  // user's roles at their own school (deactivation there is per school).
+  const statusCol = auth.isSuper
+    ? 'u.status'
+    : "CASE WHEN u.status != 'active' THEN 'inactive' WHEN SUM(CASE WHEN ur.status = 'active' AND ur.ended_at IS NULL THEN 1 ELSE 0 END) > 0 THEN 'active' ELSE 'inactive' END";
+  let sql = `SELECT u.id, u.email, u.full_name, u.phone, u.ic_masked, u.language, ${statusCol} AS status, u.last_login_at, u.created_at,
       GROUP_CONCAT(DISTINCT ur.role) AS roles,
       GROUP_CONCAT(DISTINCT s.name) AS schools
-    FROM users u LEFT JOIN user_roles ur ON ur.user_id = u.id AND ur.status = 'active'
+    FROM users u LEFT JOIN user_roles ur ON ur.user_id = u.id${auth.isSuper ? " AND ur.status = 'active'" : ''}
     LEFT JOIN schools s ON s.id = ur.school_id`;
   const binds = [];
   const where = [];
@@ -262,7 +267,23 @@ tenants.post('/users', requireRoles('school_admin'), async (c) => {
   if (!allowedRoles.includes(role)) return bad('Peranan tidak dibenarkan. / Role not permitted.', 403);
   const schoolId = auth.isSuper ? body.schoolId || auth.activeSchool : auth.activeSchool;
   if (!schoolId) return bad('Sekolah diperlukan. / School is required.');
+  if (!(await c.env.DB.prepare('SELECT 1 AS ok FROM schools WHERE id = ?').bind(schoolId).first())) {
+    return bad('Sekolah tidak dijumpai. / School not found.', 404);
+  }
   if (!body.fullName || !body.email) return bad('Nama dan e-mel diperlukan. / Name and email are required.');
+  const studentIds = role === 'parent' && Array.isArray(body.studentIds)
+    ? [...new Set(body.studentIds.filter((x) => typeof x === 'string'))]
+    : [];
+  if (studentIds.length) {
+    const found = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM students WHERE school_id = ? AND id IN (${studentIds.map(() => '?').join(',')})`,
+    )
+      .bind(schoolId, ...studentIds)
+      .first();
+    if ((found?.n || 0) !== studentIds.length) {
+      return bad('Pelajar tidak dijumpai di sekolah ini. / One or more students are not in this school.', 400);
+    }
+  }
   const existing = await c.env.DB.prepare('SELECT * FROM users WHERE lower(email) = lower(?)').bind(body.email).first();
   if (existing) return bad('E-mel sudah digunakan. / Email already in use.', 409);
   const ic = body.ic ? await encryptIc(c.env, body.ic) : { enc: null, hash: null, masked: null };
@@ -270,52 +291,43 @@ tenants.post('/users', requireRoles('school_admin'), async (c) => {
   const password = body.password || 'Mduik@2026';
   if (String(password).length < 8) return bad('Kata laluan mestilah sekurang-kurangnya 8 aksara. / Password must be at least 8 characters.');
   const hash = await hashPassword(password);
-  await c.env.DB.prepare(
-    'INSERT INTO users (id, email, full_name, ic_hash, ic_enc, ic_masked, phone, password_hash, language, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-  )
-    .bind(userId, body.email, body.fullName, ic.hash, ic.enc, ic.masked, body.phone || '', hash, body.language || 'bm', 'active', nowIso())
-    .run();
-  await c.env.DB.prepare(
-    "INSERT INTO user_roles (id, user_id, school_id, role, started_at, status) VALUES (?,?,?,?,?,'active')",
-  )
-    .bind(id('url'), userId, schoolId, role, nowIso())
-    .run();
-
+  const db = c.env.DB;
+  // All rows are written in one batch (a single transaction), so a failure leaves nothing behind.
+  const stmts = [
+    db.prepare(
+      'INSERT INTO users (id, email, full_name, ic_hash, ic_enc, ic_masked, phone, password_hash, language, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+    ).bind(userId, body.email, body.fullName, ic.hash, ic.enc, ic.masked, body.phone || '', hash, body.language || 'bm', 'active', nowIso()),
+    db.prepare("INSERT INTO user_roles (id, user_id, school_id, role, started_at, status) VALUES (?,?,?,?,?,'active')")
+      .bind(id('url'), userId, schoolId, role, nowIso()),
+  ];
   if (role === 'parent') {
-    let parent = body.phone
-      ? await c.env.DB.prepare('SELECT * FROM parents WHERE phone = ? AND lower(full_name) = lower(?)')
-          .bind(body.phone, body.fullName)
-          .first()
+    const existingParent = body.phone
+      ? await db.prepare('SELECT * FROM parents WHERE phone = ? AND lower(full_name) = lower(?)').bind(body.phone, body.fullName).first()
       : null;
-    if (!parent) {
-      const parentId = id('par');
-      await c.env.DB.prepare(
-        'INSERT INTO parents (id, full_name, email, phone, ic_masked, address, user_id, created_at) VALUES (?,?,?,?,?,?,?,?)',
-      )
-        .bind(parentId, body.fullName, body.email, body.phone || '', ic.masked, body.address || '', userId, nowIso())
-        .run();
-      parent = { id: parentId };
+    const parentId = existingParent?.id || id('par');
+    if (!existingParent) {
+      stmts.push(
+        db.prepare('INSERT INTO parents (id, full_name, email, phone, ic_masked, address, user_id, created_at) VALUES (?,?,?,?,?,?,?,?)')
+          .bind(parentId, body.fullName, body.email, body.phone || '', ic.masked, body.address || '', userId, nowIso()),
+      );
     } else {
-      await c.env.DB.prepare('UPDATE parents SET user_id = ? WHERE id = ?').bind(userId, parent.id).run();
+      stmts.push(db.prepare('UPDATE parents SET user_id = ? WHERE id = ?').bind(userId, parentId));
     }
-    await c.env.DB.prepare('UPDATE users SET parent_id = ? WHERE id = ?').bind(parent.id, userId).run();
-    if (Array.isArray(body.studentIds)) {
-      for (const sid of body.studentIds) {
-        await c.env.DB.prepare(
-          "INSERT OR IGNORE INTO parent_students (id, parent_id, student_id, relationship) VALUES (?,?,?,'guardian')",
-        )
-          .bind(id('ps'), parent.id, sid)
-          .run();
-      }
+    stmts.push(db.prepare('UPDATE users SET parent_id = ? WHERE id = ?').bind(parentId, userId));
+    for (const sid of studentIds) {
+      stmts.push(
+        db.prepare("INSERT OR IGNORE INTO parent_students (id, parent_id, student_id, relationship) VALUES (?,?,?,'guardian')")
+          .bind(id('ps'), parentId, sid),
+      );
     }
   }
   if (role === 'teacher') {
-    await c.env.DB.prepare(
-      'INSERT INTO teachers (id, school_id, user_id, full_name, email, phone, ic_masked, status, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
-    )
-      .bind(id('tch'), schoolId, userId, body.fullName, body.email, body.phone || '', ic.masked, 'active', nowIso())
-      .run();
+    stmts.push(
+      db.prepare('INSERT INTO teachers (id, school_id, user_id, full_name, email, phone, ic_masked, status, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+        .bind(id('tch'), schoolId, userId, body.fullName, body.email, body.phone || '', ic.masked, 'active', nowIso()),
+    );
   }
+  await db.batch(stmts);
   await notify(c.env, {
     schoolId,
     userId,
@@ -345,7 +357,12 @@ tenants.patch('/users/:id', requireRoles('school_admin'), async (c) => {
     if (!link) return bad('Forbidden', 403);
   }
   const updates = {};
-  if (body.status && ['active', 'inactive'].includes(body.status)) updates.status = body.status;
+  const statusChange = ['active', 'inactive'].includes(body.status) ? body.status : null;
+  if (statusChange === 'inactive' && userId === auth.user.id) {
+    return bad('Anda tidak boleh menyahaktifkan akaun anda sendiri. / You cannot deactivate your own account.');
+  }
+  // Super admin changes the account itself; a school admin only changes the user's roles at their school.
+  if (statusChange && auth.isSuper) updates.status = statusChange;
   if (body.language && ['bm', 'en'].includes(body.language)) updates.language = body.language;
   if (body.fullName) updates.full_name = String(body.fullName).slice(0, 120);
   if (body.phone !== undefined) updates.phone = String(body.phone).slice(0, 40);
@@ -353,17 +370,41 @@ tenants.patch('/users/:id', requireRoles('school_admin'), async (c) => {
     if (String(body.password).length < 8) return bad('Kata laluan terlalu pendek. / Password too short.');
     updates.password_hash = await hashPassword(body.password);
   }
+  if (statusChange === 'inactive' && !auth.isSuper) {
+    const isAdminHere = await c.env.DB.prepare(
+      "SELECT 1 AS ok FROM user_roles WHERE user_id = ? AND school_id = ? AND role = 'school_admin' AND status = 'active' AND ended_at IS NULL",
+    )
+      .bind(userId, auth.activeSchool)
+      .first();
+    if (isAdminHere) {
+      const others = await c.env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM user_roles ur JOIN users u ON u.id = ur.user_id
+         WHERE ur.school_id = ? AND ur.role = 'school_admin' AND ur.status = 'active' AND ur.ended_at IS NULL
+           AND u.status = 'active' AND ur.user_id != ?`,
+      )
+        .bind(auth.activeSchool, userId)
+        .first();
+      if (!others?.n) {
+        return bad('Sekolah mesti mempunyai sekurang-kurangnya seorang pentadbir aktif. / The school must keep at least one active admin.');
+      }
+    }
+  }
   if (Object.keys(updates).length) {
     const sets = Object.keys(updates).map((k) => `${k} = ?`).join(', ');
     await c.env.DB.prepare(`UPDATE users SET ${sets} WHERE id = ?`).bind(...Object.values(updates), userId).run();
-    if (updates.status === 'inactive') {
-      await c.env.DB.prepare(
-        "UPDATE user_roles SET status = 'inactive', ended_at = ? WHERE user_id = ? AND school_id = ?",
-      )
+  }
+  if (statusChange && !auth.isSuper) {
+    if (statusChange === 'inactive') {
+      await c.env.DB.prepare("UPDATE user_roles SET status = 'inactive', ended_at = ? WHERE user_id = ? AND school_id = ?")
         .bind(nowIso(), userId, auth.activeSchool)
+        .run();
+    } else {
+      await c.env.DB.prepare("UPDATE user_roles SET status = 'active', ended_at = NULL WHERE user_id = ? AND school_id = ? AND role != 'super_admin'")
+        .bind(userId, auth.activeSchool)
         .run();
     }
   }
+  if (updates.password_hash || updates.status === 'inactive') await revokeAllSessions(c.env, userId);
   if (Array.isArray(body.roles) && auth.isSuper) {
     await c.env.DB.prepare('DELETE FROM user_roles WHERE user_id = ?').bind(userId).run();
     for (const r of body.roles) {
@@ -375,7 +416,9 @@ tenants.patch('/users/:id', requireRoles('school_admin'), async (c) => {
         .run();
     }
   }
-  await audit(c, 'update', 'user', userId, { before: { status: target.status }, after: updates.password_hash ? { ...updates, password_hash: '[changed]' } : updates });
+  const logged = { ...updates, ...(statusChange && !auth.isSuper ? { school_status: statusChange } : {}) };
+  if (logged.password_hash) logged.password_hash = '[changed]';
+  await audit(c, 'update', 'user', userId, { before: { status: target.status }, after: logged });
   return json({ ok: true });
 });
 

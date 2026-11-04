@@ -585,12 +585,35 @@ admin.post('/backups', requireRoles('school_admin'), async (c) => {
 });
 
 /* ----------------------------- Documents ----------------------------- */
-admin.post('/documents', async (c) => {
+const DOCUMENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+
+function documentResponse(body, doc) {
+  const safeName = String(doc.filename || 'file').replace(/[^\w. -]/g, '_');
+  // Only PDF/images are shown inline; anything else (e.g. older HTML uploads) is
+  // forced to download so it can never run as a page on the app's origin.
+  const safe = DOCUMENT_TYPES.includes(doc.content_type);
+  return new Response(body, {
+    headers: {
+      'content-type': safe ? doc.content_type : 'application/octet-stream',
+      'content-disposition': `${safe ? 'inline' : 'attachment'}; filename="${safeName}"`,
+      'x-content-type-options': 'nosniff',
+    },
+  });
+}
+
+admin.post('/documents', requireRoles('school_admin', 'bursar'), async (c) => {
   const auth = c.get('auth');
-  const form = await c.req.formData();
+  if (!auth.activeSchool) return bad('Pilih sekolah dahulu. / Select a school first.');
+  let form;
+  try {
+    form = await c.req.formData();
+  } catch {
+    return bad('Muat naik tidak sah. / Invalid upload.');
+  }
   const file = form.get('file');
   if (!file || typeof file === 'string') return bad('Fail diperlukan. / File is required.');
   if (file.size > 4 * 1024 * 1024) return bad('Saiz fail melebihi 4MB. / File exceeds 4MB.');
+  if (!DOCUMENT_TYPES.includes(file.type)) return bad('Jenis fail tidak dibenarkan. / File type not allowed.');
   const buffer = await file.arrayBuffer();
   const docId = id('doc');
   let r2Key = null;
@@ -627,30 +650,27 @@ admin.post('/documents', async (c) => {
   return json({ id: docId, filename: file.name, size: file.size }, 201);
 });
 
-admin.get('/documents/:id', async (c) => {
+admin.get('/documents/:id', requireRoles('school_admin', 'bursar'), async (c) => {
   const auth = c.get('auth');
   const doc = await c.env.DB.prepare('SELECT * FROM documents WHERE id = ?').bind(c.req.param('id')).first();
   if (!doc) return bad('Fail tidak dijumpai. / File not found.', 404);
-  if (doc.school_id && !auth.isSuper && doc.school_id !== auth.activeSchool) return bad('Forbidden', 403);
+  // Files without a school (unclaimed public uploads, backups) are super admin only.
+  if (!auth.isSuper && (!doc.school_id || doc.school_id !== auth.activeSchool)) return bad('Forbidden', 403);
   if (doc.r2_key && c.env.BUCKET) {
     const obj = await c.env.BUCKET.get(doc.r2_key);
     if (!obj) return bad('Fail tidak dijumpai. / File not found.', 404);
-    return new Response(obj.body, {
-      headers: { 'content-type': doc.content_type || 'application/octet-stream', 'content-disposition': `inline; filename="${doc.filename}"` },
-    });
+    return documentResponse(obj.body, doc);
   }
   if (doc.data_b64) {
     const binary = atob(doc.data_b64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return new Response(bytes, {
-      headers: { 'content-type': doc.content_type || 'application/octet-stream', 'content-disposition': `inline; filename="${doc.filename}"` },
-    });
+    return documentResponse(bytes, doc);
   }
   return bad('Fail tidak tersedia. / File unavailable.', 404);
 });
 
-admin.get('/documents', async (c) => {
+admin.get('/documents', requireRoles('school_admin', 'bursar'), async (c) => {
   const auth = c.get('auth');
   const ownerType = c.req.query('ownerType');
   const ownerId = c.req.query('ownerId');
@@ -665,7 +685,16 @@ admin.get('/documents', async (c) => {
 /* ------------------------------- Lookups ----------------------------- */
 admin.get('/lookups', async (c) => {
   const auth = c.get('auth');
-  if (!auth.activeSchool) return json({ teachers: [], parents: [], students: [], feePlans: [], classes: [] });
+  const empty = { teachers: [], parents: [], students: [], feePlans: [], classes: [] };
+  if (!auth.activeSchool) return json(empty);
+  const role = auth.isSuper ? 'super_admin' : auth.roleInSchool;
+  if (!['super_admin', 'school_admin', 'bursar', 'teacher'].includes(role)) return json(empty);
+  if (role === 'teacher') {
+    const { results } = await c.env.DB.prepare(
+      "SELECT t.id, t.full_name, t.user_id FROM teachers t WHERE t.school_id = ? AND t.status = 'active' ORDER BY t.full_name",
+    ).bind(auth.activeSchool).all();
+    return json({ ...empty, teachers: results });
+  }
   const teachers = await c.env.DB.prepare(
     "SELECT t.id, t.full_name, t.user_id FROM teachers t WHERE t.school_id = ? AND t.status = 'active' ORDER BY t.full_name",
   ).bind(auth.activeSchool).all();
