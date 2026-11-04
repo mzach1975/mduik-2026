@@ -6,26 +6,7 @@ import Icon from './Icon';
 /* Brand                                                              */
 /* ------------------------------------------------------------------ */
 
-export function Brand({ compact = false, light = false }) {
-  return (
-    <span className={`brand ${light ? 'brand--light' : ''}`}>
-      <span className="brand__mark" aria-hidden="true">
-        <svg viewBox="0 0 40 40" width="40" height="40" fill="none">
-          <rect width="40" height="40" rx="12" fill="currentColor" opacity="0.12" />
-          <path d="M20 7.5 31 13v6.2c0 6.4-4.6 11-11 13.3C13.6 30.2 9 25.6 9 19.2V13l11-5.5Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
-          <path d="M20 12.2v11.4M15.3 16.6h9.4M16.6 22.4h6.8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-          <circle cx="20" cy="10.4" r="1.5" fill="currentColor" />
-        </svg>
-      </span>
-      {!compact && (
-        <span className="brand__text">
-          <strong>MDUIK</strong>
-          <small>Sistem Pentadbiran Sekolah</small>
-        </span>
-      )}
-    </span>
-  );
-}
+export { Brand } from './Brand';
 
 /* ------------------------------------------------------------------ */
 /* Layout primitives                                                  */
@@ -130,7 +111,7 @@ export function Avatar({ name = '', size = 40 }) {
 /* ------------------------------------------------------------------ */
 
 const TONES = {
-  green: ['accepted', 'approved', 'active', 'paid', 'completed', 'sent', 'confirmed', 'registered', 'resolved', 'accepted_offer'],
+  green: ['accepted', 'approved', 'active', 'paid', 'completed', 'sent', 'confirmed', 'registered', 'resolved', 'accepted_offer', 'published'],
   amber: ['pending', 'submitted', 'interview', 'waiting_list', 'partial', 'issued', 'scheduled', 'queued', 'dry_run', 'pending_review', 'offered'],
   red: ['rejected', 'not_accepted', 'cancelled', 'overdue', 'unpaid', 'failed', 'lapsed', 'declined', 'suspended', 'inactive'],
   blue: ['new', 'info', 'submitted'],

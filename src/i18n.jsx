@@ -75,6 +75,9 @@ export function LanguageProvider({ children }) {
         const map = {
           active: 'common.active',
           inactive: 'common.inactive',
+          published: 'common.published',
+          archived: 'common.archived',
+          draft: 'common.draft',
           pending: 'common.pending',
           approved: 'common.approved',
           rejected: 'common.rejected',

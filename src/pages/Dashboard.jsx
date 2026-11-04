@@ -3,6 +3,7 @@ import { useAuth } from '../auth';
 import { useI18n } from '../i18n';
 import { useApi } from '../hooks';
 import Icon from '../components/Icon';
+import { GeoPattern } from '../components/Brand';
 import {
   Alert,
   Avatar,
@@ -177,6 +178,7 @@ function SchoolDashboard({ data }) {
   return (
     <>
       <div className="dashhero">
+        <GeoPattern className="dashhero__pattern" />
         <div className="dashhero__text">
           <span className="page-head__eyebrow">{monthLabel(month)} · {date(day)}</span>
           <h1>{t('dashboard.welcome')}, {user.name.split(' ')[0]}</h1>

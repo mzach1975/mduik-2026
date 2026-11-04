@@ -5,6 +5,7 @@ import { useI18n } from '../i18n';
 import { api } from '../api';
 import { useApi } from '../hooks';
 import Icon from './Icon';
+import { GeoPattern } from './Brand';
 import { Avatar, Brand, RoleBadge } from './ui';
 
 const ROLE_LABEL = {
@@ -89,7 +90,12 @@ function navSections(role, isSuper, hasSchool) {
 
   if (admin || superOnly) {
     const items = [];
-    if (isSuper) items.push({ to: '/app/schools', label: 'nav.schools', icon: 'school' });
+    if (isSuper) {
+      items.push(
+        { to: '/app/schools', label: 'nav.schools', icon: 'school' },
+        { to: '/app/announcements', label: 'nav.announcements', icon: 'megaphone' },
+      );
+    }
     items.push(
       { to: '/app/users', label: 'nav.users', icon: 'users' },
       { to: '/app/audit', label: 'nav.audit', icon: 'audit' },
@@ -183,6 +189,7 @@ export default function Layout() {
     <div className="shell">
       {drawer && <button type="button" className="drawer-scrim" aria-label="Close menu" onClick={() => setDrawer(false)} />}
       <aside className={`sidebar ${drawer ? 'sidebar--open' : ''}`.trim()}>
+        <GeoPattern className="sidebar__pattern" />
         <div className="sidebar__brand">
           <Link to="/app" aria-label="MDUIK">
             <Brand light />

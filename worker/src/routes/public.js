@@ -198,6 +198,25 @@ pub.post('/documents', async (c) => {
   return json({ id: docId, filename: file.name, size: file.size }, 201);
 });
 
+pub.get('/announcements', async (c) => {
+  const requested = Number.parseInt(c.req.query('limit') || '6', 10);
+  const limit = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 20) : 6;
+  const day = today();
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, title_bm, title_en, body_bm, body_en, category, link_url, link_label_bm, link_label_en,
+      starts_at, ends_at, is_pinned, created_at
+     FROM announcements
+     WHERE status = 'published'
+       AND (starts_at IS NULL OR starts_at <= ?)
+       AND (ends_at IS NULL OR ends_at >= ?)
+     ORDER BY is_pinned DESC, COALESCE(starts_at, created_at) DESC
+     LIMIT ?`,
+  )
+    .bind(day, day, limit)
+    .all();
+  return json({ announcements: results });
+});
+
 pub.get('/health', async (c) => {
   const row = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM schools').first();
   return json({ ok: true, schools: row.n, time: nowIso(), r2: !!c.env.BUCKET, email: !!c.env.EMAIL });

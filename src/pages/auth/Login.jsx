@@ -3,6 +3,7 @@ import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../auth';
 import { useI18n } from '../../i18n';
 import Icon from '../../components/Icon';
+import { BrandMark, GeoPattern } from '../../components/Brand';
 import { Alert, Brand, Field, Input } from '../../components/ui';
 
 const DEMO = [
@@ -61,14 +62,15 @@ export default function Login() {
     <div className="authpage">
       <aside className="authpage__art">
         <div className="authpage__artbg" aria-hidden="true">
+          <GeoPattern className="authpage__geo" />
           <span className="authpage__orb" />
-          <span className="authpage__pattern" />
         </div>
         <div className="authpage__arthead">
           <Link to="/"><Brand light /></Link>
           <Link to="/" className="authpage__back"><Icon name="arrowLeft" size={15} /> {t('apply.backToHome')}</Link>
         </div>
         <div className="authpage__artbody">
+          <BrandMark size={88} className="authpage__seal" />
           <span className="eyebrow eyebrow--light">{t('landing.badge')}</span>
           <h1>{t('landing.heroTitle')} <em>{t('landing.heroHighlight')}</em></h1>
           <p>{t('landing.heroSubtitle')}</p>
@@ -106,6 +108,7 @@ export default function Login() {
         </div>
 
         <div className="authcard">
+          <div className="authcard__brand"><Brand /></div>
           <span className="authcard__icon"><Icon name="lock" size={22} /></span>
           <h2>{t('auth.welcomeBack')}</h2>
           <p className="muted">{t('auth.signInSubtitle')}</p>

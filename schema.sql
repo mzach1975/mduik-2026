@@ -363,6 +363,28 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read_at);
 
+CREATE TABLE IF NOT EXISTS announcements (
+  id TEXT PRIMARY KEY,
+  title_bm TEXT NOT NULL,
+  title_en TEXT,
+  body_bm TEXT NOT NULL,
+  body_en TEXT,
+  category TEXT NOT NULL DEFAULT 'general',
+  status TEXT NOT NULL DEFAULT 'draft',
+  link_url TEXT,
+  link_label_bm TEXT,
+  link_label_en TEXT,
+  starts_at TEXT,
+  ends_at TEXT,
+  is_pinned INTEGER NOT NULL DEFAULT 0,
+  created_by TEXT,
+  updated_by TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_announcements_public ON announcements(status, starts_at, ends_at);
+CREATE INDEX IF NOT EXISTS idx_announcements_pinned ON announcements(is_pinned, created_at);
+
 CREATE TABLE IF NOT EXISTS audit_logs (
   id TEXT PRIMARY KEY,
   school_id TEXT,

@@ -2,6 +2,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { useAuth } from './auth';
 import Layout from './components/Layout';
 import PublicLayout from './components/PublicLayout';
+import { BrandMark } from './components/Brand';
 import { Loading } from './components/ui';
 
 import Landing from './pages/public/Landing';
@@ -37,6 +38,7 @@ import Imports from './pages/Imports';
 import Retention from './pages/Retention';
 import Schools from './pages/Schools';
 import Users from './pages/Users';
+import Announcements from './pages/Announcements';
 import Notifications from './pages/Notifications';
 import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
@@ -44,13 +46,7 @@ import NotFound from './pages/NotFound';
 function Splash() {
   return (
     <div className="splash">
-      <span className="splash__mark" aria-hidden="true">
-        <svg viewBox="0 0 40 40" width="44" height="44" fill="none">
-          <rect width="40" height="40" rx="12" fill="currentColor" opacity="0.12" />
-          <path d="M20 7.5 31 13v6.2c0 6.4-4.6 11-11 13.3C13.6 30.2 9 25.6 9 19.2V13l11-5.5Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
-          <path d="M20 12.2v11.4M15.3 16.6h9.4M16.6 22.4h6.8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-        </svg>
-      </span>
+      <BrandMark size={64} className="splash__mark" />
       <Loading />
     </div>
   );
@@ -137,6 +133,7 @@ export default function App() {
         <Route path="users" element={<RequireRole roles={ADMIN}><Users /></RequireRole>} />
 
         <Route path="schools" element={<RequireRole roles={SUPER}><Schools /></RequireRole>} />
+        <Route path="announcements" element={<RequireRole roles={SUPER}><Announcements /></RequireRole>} />
         <Route path="notifications" element={<Notifications />} />
         <Route path="settings" element={<Settings />} />
 

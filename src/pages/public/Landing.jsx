@@ -2,12 +2,23 @@ import { Link } from 'react-router-dom';
 import { useI18n } from '../../i18n';
 import { useApi } from '../../hooks';
 import Icon from '../../components/Icon';
+import { BrandMark, GeoPattern } from '../../components/Brand';
 import { Badge } from '../../components/ui';
 
 export default function Landing() {
-  const { t } = useI18n();
+  const { t, lang, date } = useI18n();
   const { data } = useApi('/public/schools');
+  const { data: announcementData } = useApi('/public/announcements');
   const schools = data?.schools || [];
+  const announcements = announcementData?.announcements || [];
+
+  const titleOf = (a) => (lang === 'en' ? a.title_en || a.title_bm : a.title_bm);
+  const bodyOf = (a) => (lang === 'en' ? a.body_en || a.body_bm : a.body_bm);
+  const linkLabelOf = (a) =>
+    lang === 'en'
+      ? a.link_label_en || a.link_label_bm || t('landing.readMore')
+      : a.link_label_bm || a.link_label_en || t('landing.readMore');
+  const categoryTone = { general: 'slate', admission: 'teal', event: 'amber', reminder: 'purple' };
 
   const features = [
     { icon: 'file', title: 'landing.featureAdmissions', text: 'landing.featureAdmissionsText' },
@@ -26,9 +37,9 @@ export default function Landing() {
     <>
       <section className="hero">
         <div className="hero__bg" aria-hidden="true">
+          <GeoPattern className="hero__pattern" />
           <span className="hero__orb hero__orb--1" />
           <span className="hero__orb hero__orb--2" />
-          <span className="hero__grid" />
         </div>
         <div className="hero__inner">
           <div className="hero__copy">
@@ -54,56 +65,59 @@ export default function Landing() {
           </div>
 
           <div className="hero__visual" aria-hidden="true">
-            <div className="mockcard mockcard--main">
-              <div className="mockcard__head">
-                <span className="mockcard__logo">M</span>
-                <div>
-                  <strong>MDUIK Tahfiz</strong>
-                  <small>Sesi kemasukan 2026</small>
+            <div className="hero__archframe">
+              <span className="hero__seal"><BrandMark size={64} /></span>
+              <div className="mockcard mockcard--main">
+                <div className="mockcard__head">
+                  <BrandMark size={34} className="mockcard__logo" />
+                  <div>
+                    <strong>MDUIK Tahfiz</strong>
+                    <small>Sesi kemasukan 2026</small>
+                  </div>
+                  <Badge tone="amber" dot>Dalam temuduga</Badge>
                 </div>
-                <Badge tone="amber" dot>Dalam temuduga</Badge>
-              </div>
-              <div className="mockcard__ref">
-                <span>{t('apply.reference')}</span>
-                <strong>APP-KL/2026/00018</strong>
-              </div>
-              <div className="mockcard__person">
-                <span className="mockcard__avatar">AH</span>
-                <div>
-                  <strong>Ahmad Haziq bin Ismail</strong>
-                  <small>Tahfiz · Kelas 4 · 10 tahun</small>
+                <div className="mockcard__ref">
+                  <span>{t('apply.reference')}</span>
+                  <strong>APP-KL/2026/00018</strong>
+                </div>
+                <div className="mockcard__person">
+                  <span className="mockcard__avatar">AH</span>
+                  <div>
+                    <strong>Ahmad Haziq bin Ismail</strong>
+                    <small>Tahfiz · Kelas 4 · 10 tahun</small>
+                  </div>
+                </div>
+                <div className="mocksteps">
+                  <span className="mocksteps__item is-done"><i /> Mohon</span>
+                  <span className="mocksteps__item is-active"><i /> Temuduga</span>
+                  <span className="mocksteps__item"><i /> Keputusan</span>
+                  <span className="mocksteps__item"><i /> Daftar</span>
+                </div>
+                <div className="mockcard__score">
+                  <div>
+                    <span>{t('applications.finalMark')}</span>
+                    <strong>86<span>/100</span></strong>
+                  </div>
+                  <div className="mockcard__assessors">
+                    <span className="mockcard__avatar mockcard__avatar--sm">NA</span>
+                    <span className="mockcard__avatar mockcard__avatar--sm">MZ</span>
+                    <small>2 {t('interviews.assessor')}</small>
+                  </div>
                 </div>
               </div>
-              <div className="mocksteps">
-                <span className="mocksteps__item is-done"><i /> Mohon</span>
-                <span className="mocksteps__item is-active"><i /> Temuduga</span>
-                <span className="mocksteps__item"><i /> Keputusan</span>
-                <span className="mocksteps__item"><i /> Daftar</span>
-              </div>
-              <div className="mockcard__score">
-                <div>
-                  <span>{t('applications.finalMark')}</span>
-                  <strong>86<span>/100</span></strong>
-                </div>
-                <div className="mockcard__assessors">
-                  <span className="mockcard__avatar mockcard__avatar--sm">NA</span>
-                  <span className="mockcard__avatar mockcard__avatar--sm">MZ</span>
-                  <small>2 {t('interviews.assessor')}</small>
-                </div>
-              </div>
-            </div>
 
-            <div className="mockcard mockcard--float">
-              <span className="mockcard__receipticon"><Icon name="receipt" size={20} /></span>
-              <div>
-                <small>{t('common.receipt')}</small>
-                <strong>RCP/2026/00034</strong>
+              <div className="mockcard mockcard--float">
+                <span className="mockcard__receipticon"><Icon name="receipt" size={20} /></span>
+                <div>
+                  <small>{t('common.receipt')}</small>
+                  <strong>RCP/2026/00034</strong>
+                </div>
+                <span className="mockcard__amount">RM 150.00</span>
               </div>
-              <span className="mockcard__amount">RM 150.00</span>
-            </div>
-            <div className="mockcard mockcard--chip">
-              <Icon name="checkCircle" size={16} />
-              <span>{t('landing.how2')}</span>
+              <div className="mockcard mockcard--chip">
+                <Icon name="checkCircle" size={16} />
+                <span>{t('landing.how2')}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -126,6 +140,63 @@ export default function Landing() {
             <span>{t('landing.statRecords')}</span>
           </div>
         </div>
+      </section>
+
+      <section className="section section--announcements" aria-labelledby="announcements-heading">
+        <div className="section__head">
+          <span className="eyebrow eyebrow--muted">{t('landing.announcementsEyebrow')}</span>
+          <h2 id="announcements-heading">{t('landing.announcementsTitle')}</h2>
+          <p>{t('landing.announcementsSubtitle')}</p>
+        </div>
+
+        {announcements.length > 0 ? (
+          <div className="announcementgrid">
+            {announcements.slice(0, 3).map((a) => {
+              const body = bodyOf(a) || '';
+              const excerpt = body.length > 180 ? `${body.slice(0, 177).trimEnd()}…` : body;
+              return (
+                <article className={`announcement ${a.is_pinned ? 'announcement--pinned' : ''}`.trim()} key={a.id}>
+                  <div className="announcement__top">
+                    <Badge tone={categoryTone[a.category] || 'slate'}>
+                      {t(`announcements.categories.${a.category}`)}
+                    </Badge>
+                    {a.is_pinned ? (
+                      <span className="announcement__pin">
+                        <Icon name="pin" size={13} /> {t('announcements.pinnedStat')}
+                      </span>
+                    ) : null}
+                  </div>
+                  <h3>{titleOf(a)}</h3>
+                  <p>{excerpt}</p>
+                  <div className="announcement__foot">
+                    <span className="announcement__date">
+                      <Icon name="calendar" size={15} /> {date(a.starts_at || a.created_at)}
+                    </span>
+                    {a.link_url && (
+                      /^https?:\/\//i.test(a.link_url) ? (
+                        <a className="announcement__link" href={a.link_url} target="_blank" rel="noreferrer">
+                          {linkLabelOf(a)} <Icon name="arrowRight" size={15} />
+                        </a>
+                      ) : (
+                        <Link className="announcement__link" to={a.link_url}>
+                          {linkLabelOf(a)} <Icon name="arrowRight" size={15} />
+                        </Link>
+                      )
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="announcement announcement--empty">
+            <span className="announcement__emptyicon"><Icon name="bell" size={24} /></span>
+            <div>
+              <h3>{t('landing.noAnnouncements')}</h3>
+              <p>{t('landing.noAnnouncementsText')}</p>
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="section">
@@ -153,7 +224,7 @@ export default function Landing() {
         </div>
         <div className="catgrid">
           <article className="catcard catcard--tahfiz">
-            <span className="catcard__pattern" aria-hidden="true" />
+            <GeoPattern className="catcard__geo" />
             <span className="catcard__icon"><Icon name="book" size={24} /></span>
             <h3>{t('common.tahfiz')}</h3>
             <p>{t('landing.catTahfizText')}</p>
@@ -167,7 +238,7 @@ export default function Landing() {
             </Link>
           </article>
           <article className="catcard catcard--islamic">
-            <span className="catcard__pattern" aria-hidden="true" />
+            <GeoPattern className="catcard__geo" />
             <span className="catcard__icon"><Icon name="school" size={24} /></span>
             <h3>{t('common.islamicStudies')}</h3>
             <p>{t('landing.catIslamicText')}</p>
@@ -201,6 +272,7 @@ export default function Landing() {
       </section>
 
       <section className="section section--portal">
+        <GeoPattern className="portalshow__geo" />
         <div className="portalshow">
           <div className="portalshow__copy">
             <span className="eyebrow eyebrow--light">{t('landing.parentPortal')}</span>

@@ -60,6 +60,129 @@ admin.get('/notifications/outbox', requireRoles('school_admin'), async (c) => {
   return json({ notifications: results });
 });
 
+/* ----------------------------- Announcements ------------------------- */
+function superOnly(c) {
+  const auth = c.get('auth');
+  if (!auth?.isSuper) return bad('Hanya Super Admin boleh mengurus pengumuman. / Only a Super Admin can manage announcements.', 403);
+  return null;
+}
+
+function cleanAnnouncement(input, existing = {}) {
+  const pick = (key, fallback = '') => String(input[key] ?? existing[key] ?? fallback).trim();
+  const titleBm = pick('title_bm').slice(0, 180);
+  const titleEn = pick('title_en').slice(0, 180);
+  const bodyBm = pick('body_bm').slice(0, 4000);
+  const bodyEn = pick('body_en').slice(0, 4000);
+  const category = ['general', 'admission', 'event', 'reminder'].includes(input.category)
+    ? input.category
+    : (existing.category || 'general');
+  const status = ['draft', 'published', 'archived'].includes(input.status)
+    ? input.status
+    : (existing.status || 'draft');
+  const startsAt = input.starts_at !== undefined
+    ? (input.starts_at ? String(input.starts_at).slice(0, 10) : null)
+    : (existing.starts_at || null);
+  const endsAt = input.ends_at !== undefined
+    ? (input.ends_at ? String(input.ends_at).slice(0, 10) : null)
+    : (existing.ends_at || null);
+  const linkUrl = input.link_url !== undefined ? (String(input.link_url).trim().slice(0, 500) || null) : (existing.link_url || null);
+  const linkLabelBm = input.link_label_bm !== undefined
+    ? String(input.link_label_bm).trim().slice(0, 80)
+    : (existing.link_label_bm || '');
+  const linkLabelEn = input.link_label_en !== undefined
+    ? String(input.link_label_en).trim().slice(0, 80)
+    : (existing.link_label_en || '');
+  const isPinned = input.is_pinned === undefined ? Number(existing.is_pinned || 0) : (input.is_pinned ? 1 : 0);
+
+  if (!titleBm) return { error: 'Tajuk Bahasa Melayu diperlukan. / Malay title is required.' };
+  if (!bodyBm) return { error: 'Kandungan Bahasa Melayu diperlukan. / Malay body is required.' };
+  if (startsAt && endsAt && endsAt < startsAt) return { error: 'Tarikh tamat mesti selepas tarikh mula. / End date must be after the start date.' };
+  if (linkUrl && !/^(https?:\/\/|\/)/i.test(linkUrl)) return { error: 'Pautan mesti bermula dengan http(s):// atau /. / Link must start with http(s):// or /.' };
+
+  return {
+    value: {
+      title_bm: titleBm,
+      title_en: titleEn || null,
+      body_bm: bodyBm,
+      body_en: bodyEn || null,
+      category,
+      status,
+      starts_at: startsAt,
+      ends_at: endsAt,
+      link_url: linkUrl,
+      link_label_bm: linkLabelBm || null,
+      link_label_en: linkLabelEn || null,
+      is_pinned: isPinned,
+    },
+  };
+}
+
+admin.get('/announcements', (c) => {
+  const denied = superOnly(c);
+  if (denied) return denied;
+  return c.env.DB.prepare('SELECT * FROM announcements ORDER BY is_pinned DESC, created_at DESC')
+    .all()
+    .then(({ results }) => json({ announcements: results }));
+});
+
+admin.post('/announcements', async (c) => {
+  const denied = superOnly(c);
+  if (denied) return denied;
+  const auth = c.get('auth');
+  const body = await readJson(c);
+  const cleaned = cleanAnnouncement(body);
+  if (cleaned.error) return bad(cleaned.error);
+  const announcementId = id('ann');
+  const now = nowIso();
+  const a = cleaned.value;
+  await c.env.DB.prepare(
+    `INSERT INTO announcements (id, title_bm, title_en, body_bm, body_en, category, status, link_url,
+      link_label_bm, link_label_en, starts_at, ends_at, is_pinned, created_by, updated_by, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  )
+    .bind(
+      announcementId, a.title_bm, a.title_en, a.body_bm, a.body_en, a.category, a.status, a.link_url,
+      a.link_label_bm, a.link_label_en, a.starts_at, a.ends_at, a.is_pinned, auth.user.id, auth.user.id, now, now,
+    )
+    .run();
+  await audit(c, 'create', 'announcement', announcementId, { after: a });
+  return json({ id: announcementId }, 201);
+});
+
+admin.patch('/announcements/:id', async (c) => {
+  const denied = superOnly(c);
+  if (denied) return denied;
+  const auth = c.get('auth');
+  const existing = await c.env.DB.prepare('SELECT * FROM announcements WHERE id = ?').bind(c.req.param('id')).first();
+  if (!existing) return bad('Pengumuman tidak dijumpai. / Announcement not found.', 404);
+  const body = await readJson(c);
+  const cleaned = cleanAnnouncement(body, existing);
+  if (cleaned.error) return bad(cleaned.error);
+  const a = cleaned.value;
+  await c.env.DB.prepare(
+    `UPDATE announcements SET title_bm = ?, title_en = ?, body_bm = ?, body_en = ?, category = ?, status = ?,
+      link_url = ?, link_label_bm = ?, link_label_en = ?, starts_at = ?, ends_at = ?, is_pinned = ?, updated_by = ?, updated_at = ?
+     WHERE id = ?`,
+  )
+    .bind(
+      a.title_bm, a.title_en, a.body_bm, a.body_en, a.category, a.status, a.link_url, a.link_label_bm,
+      a.link_label_en, a.starts_at, a.ends_at, a.is_pinned, auth.user.id, nowIso(), existing.id,
+    )
+    .run();
+  await audit(c, 'update', 'announcement', existing.id, { before: existing, after: a });
+  return json({ ok: true });
+});
+
+admin.delete('/announcements/:id', async (c) => {
+  const denied = superOnly(c);
+  if (denied) return denied;
+  const existing = await c.env.DB.prepare('SELECT * FROM announcements WHERE id = ?').bind(c.req.param('id')).first();
+  if (!existing) return bad('Pengumuman tidak dijumpai. / Announcement not found.', 404);
+  await c.env.DB.prepare('DELETE FROM announcements WHERE id = ?').bind(existing.id).run();
+  await audit(c, 'delete', 'announcement', existing.id, { before: existing });
+  return json({ ok: true });
+});
+
 /* ------------------------------ Audit log ---------------------------- */
 admin.get('/audit-logs', requireRoles('school_admin'), async (c) => {
   const auth = c.get('auth');
