@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { authMiddleware } from '../lib/auth.js';
 import { json, bad, today, toCsv, toExcel, downloadHeaders, monthOf } from '../lib/util.js';
 import { audit } from '../lib/audit.js';
-import { agingReport } from '../lib/finance.js';
+import { agingReport, ADJUSTED_RATE_SQL, monthlyRate } from '../lib/finance.js';
 import { buildReportPdf } from '../lib/pdf.js';
 
 const reports = new Hono();
@@ -41,7 +41,6 @@ reports.get('/:id', async (c) => {
   const db = c.env.DB;
   const from = c.req.query('from') || `${new Date().getUTCFullYear()}-01-01`;
   const to = c.req.query('to') || today();
-  const className = c.req.query('class');
   let def;
 
   if (reportId === 'admissions-funnel') {
@@ -87,18 +86,17 @@ reports.get('/:id', async (c) => {
       summary: [{ label: 'Interviews', value: results.length }],
     };
   } else if (reportId === 'registration-list') {
-    const sql = `SELECT s.id, s.full_name, s.class_name, s.status, s.ic_masked, s.monthly_tracking, s.created_at,
+    const sql = `SELECT s.id, s.full_name, s.status, s.ic_masked, s.monthly_tracking, s.created_at,
         (SELECT p.full_name FROM parents p JOIN parent_students ps ON ps.parent_id = p.id WHERE ps.student_id = s.id LIMIT 1) AS parent_name,
         (SELECT p.phone FROM parents p JOIN parent_students ps ON ps.parent_id = p.id WHERE ps.student_id = s.id LIMIT 1) AS parent_phone
-      FROM students s WHERE s.school_id = ? AND s.status IN ('active','withdrawn','graduated') ${className ? 'AND s.class_name = ?' : ''}
-      ORDER BY s.class_name, s.full_name`;
-    const { results } = await db.prepare(sql).bind(schoolId, ...(className ? [className] : [])).all();
+      FROM students s WHERE s.school_id = ? AND s.status IN ('active','withdrawn','graduated')
+      ORDER BY s.full_name`;
+    const { results } = await db.prepare(sql).bind(schoolId).all();
     def = {
       title: 'Registration list / Senarai pendaftaran',
       columns: [
         { key: 'full_name', label: 'Student' },
-        { key: 'class_name', label: 'Class' },
-        { key: 'ic_masked', label: 'IC' },
+        { key: 'ic_masked', label: 'IC / Passport No.' },
         { key: 'parent_name', label: 'Parent' },
         { key: 'parent_phone', label: 'Phone' },
         { key: 'monthly_tracking', label: 'Tracking', value: (r) => (r.monthly_tracking ? 'On' : 'Off') },
@@ -108,20 +106,19 @@ reports.get('/:id', async (c) => {
       summary: [{ label: 'Students', value: results.length }],
     };
   } else if (reportId === 'student-records') {
-    const sql = `SELECT s.full_name, s.class_name, s.ic_masked, s.dob, s.gender, s.phone, s.email, s.status,
-        s.monthly_fee_cents, s.monthly_tracking, s.tracking_start,
+    const school = await db.prepare('SELECT monthly_fee_cents FROM schools WHERE id = ?').bind(schoolId).first();
+    const sql = `SELECT s.full_name, s.ic_masked, s.dob, s.gender, s.status,
+        ${ADJUSTED_RATE_SQL} AS adjusted_rate, s.monthly_tracking, s.tracking_start,
         (SELECT COALESCE(SUM(i.amount_cents - i.paid_cents - i.credited_cents - i.waived_cents),0) FROM invoices i WHERE i.student_id = s.id AND i.status IN ('unpaid','partial')) AS outstanding
-      FROM students s WHERE s.school_id = ? ${className ? 'AND s.class_name = ?' : ''} ORDER BY s.full_name`;
-    const { results } = await db.prepare(sql).bind(schoolId, ...(className ? [className] : [])).all();
+      FROM students s WHERE s.school_id = ? ORDER BY s.full_name`;
+    const { results } = await db.prepare(sql).bind(schoolId).all();
     def = {
       title: 'Student records / Rekod pelajar',
       columns: [
         { key: 'full_name', label: 'Student' },
-        { key: 'class_name', label: 'Class' },
-        { key: 'ic_masked', label: 'IC' },
+        { key: 'ic_masked', label: 'IC / Passport No.' },
         { key: 'gender', label: 'Gender' },
-        { key: 'phone', label: 'Phone' },
-        { key: 'monthly_fee_cents', label: 'Monthly fee (RM)', value: (r) => money(r.monthly_fee_cents) },
+        { key: 'monthly_fee', label: 'Monthly fee (RM)', value: (r) => money(monthlyRate(r.adjusted_rate, school || {})) },
         { key: 'monthly_tracking', label: 'Tracking', value: (r) => (r.monthly_tracking ? 'On' : 'Off') },
         { key: 'outstanding', label: 'Outstanding (RM)', value: (r) => money(r.outstanding) },
         { key: 'status', label: 'Status' },
@@ -131,9 +128,9 @@ reports.get('/:id', async (c) => {
     };
   } else if (reportId === 'teacher-records') {
     const { results } = await db.prepare(
-      `SELECT t.full_name, t.email, t.phone, t.status,
-        (SELECT GROUP_CONCAT(s.name, ', ') FROM user_roles ur JOIN schools s ON s.id = ur.school_id WHERE ur.user_id = t.user_id AND ur.status = 'active') AS schools
-       FROM teachers t WHERE t.school_id = ? ORDER BY t.full_name`,
+      `SELECT t.full_name, t.ic_masked, t.email, t.phone, tm.status,
+        (SELECT GROUP_CONCAT(s.name, ', ') FROM teacher_schools m JOIN schools s ON s.id = m.school_id WHERE m.teacher_id = t.id AND m.status = 'active') AS schools
+       FROM teacher_schools tm JOIN teachers t ON t.id = tm.teacher_id WHERE tm.school_id = ? ORDER BY t.full_name`,
     )
       .bind(schoolId)
       .all();
@@ -141,6 +138,7 @@ reports.get('/:id', async (c) => {
       title: 'Teacher records / Rekod guru',
       columns: [
         { key: 'full_name', label: 'Teacher' },
+        { key: 'ic_masked', label: 'IC / Passport No.' },
         { key: 'email', label: 'Email' },
         { key: 'phone', label: 'Phone' },
         { key: 'schools', label: 'Schools' },
@@ -151,9 +149,9 @@ reports.get('/:id', async (c) => {
     };
   } else if (reportId === 'teacher-assignments') {
     const { results } = await db.prepare(
-      `SELECT t.full_name, t.email, s.name AS school_name, ur.role, ur.started_at, ur.status
-       FROM teachers t JOIN user_roles ur ON ur.user_id = t.user_id JOIN schools s ON s.id = ur.school_id
-       WHERE t.school_id = ? ORDER BY t.full_name`,
+      `SELECT t.full_name, t.email, s.name AS school_name, 'teacher' AS role, tm.created_at AS started_at, tm.status
+       FROM teacher_schools tm JOIN teachers t ON t.id = tm.teacher_id JOIN schools s ON s.id = tm.school_id
+       WHERE tm.teacher_id IN (SELECT teacher_id FROM teacher_schools WHERE school_id = ?) ORDER BY t.full_name, s.name`,
     )
       .bind(schoolId)
       .all();
@@ -308,7 +306,7 @@ reports.get('/:id', async (c) => {
       `SELECT s.state, s.name AS school_name, s.category,
         (SELECT COUNT(*) FROM students st WHERE st.school_id = s.id AND st.status = 'active') AS students,
         (SELECT COUNT(*) FROM students st WHERE st.school_id = s.id AND st.monthly_tracking = 1) AS tracking_on,
-        (SELECT COUNT(*) FROM teachers t WHERE t.school_id = s.id AND t.status = 'active') AS teachers,
+        (SELECT COUNT(*) FROM teacher_schools tm WHERE tm.school_id = s.id AND tm.status = 'active') AS teachers,
         (SELECT COALESCE(SUM(p.amount_cents),0) FROM payments p WHERE p.school_id = s.id AND substr(p.paid_at,1,7) = ? AND (p.receipt_id IS NULL OR p.receipt_id NOT IN (SELECT id FROM receipts WHERE status = 'cancelled'))) AS collected_month,
         (SELECT COALESCE(SUM(i.amount_cents - i.paid_cents - i.credited_cents - i.waived_cents),0) FROM invoices i WHERE i.school_id = s.id AND i.status IN ('unpaid','partial')) AS outstanding
        FROM schools s ORDER BY s.state, s.name`,

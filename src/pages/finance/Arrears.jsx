@@ -114,7 +114,6 @@ export default function Arrears() {
                     render: (r) => (
                       <span className="stack-cell">
                         <strong>{r.student_name}</strong>
-                        <small>{r.class_name || '—'}</small>
                       </span>
                     ),
                   },

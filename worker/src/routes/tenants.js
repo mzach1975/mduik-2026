@@ -3,7 +3,9 @@ import { authMiddleware, requireRoles, hashPassword, encryptIc, hashIc, publicUs
 import { id, nowIso, readJson, bad, json, slugify, pick, normalizeIc } from '../lib/util.js';
 import { audit } from '../lib/audit.js';
 import { notify } from '../lib/notify.js';
-import { planParent, planFailure, commitParent, linkParentToStudent } from '../lib/parents.js';
+import { registerParent } from '../lib/parents.js';
+import { registerTeacher } from '../lib/teachers.js';
+import { message } from '../lib/people.js';
 
 const tenants = new Hono();
 tenants.use('*', authMiddleware);
@@ -33,13 +35,23 @@ const SCHOOL_FIELDS = [
   'status',
 ];
 
+const FEE_REQUIRED =
+  'Yuran bulanan lalai dan yuran pendaftaran diperlukan (RM, dua tempat perpuluhan). / Default monthly fee and registration fee amount are required (RM, two decimals).';
+
+/** A required fee in sen: a whole number from 0 to RM 1,000,000.00, else null. */
+function feeCents(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 && n <= 100000000 ? n : null;
+}
+
 tenants.get('/schools', async (c) => {
   const auth = c.get('auth');
   if (auth.isSuper) {
     const { results } = await c.env.DB.prepare(
       `SELECT s.*,
         (SELECT COUNT(*) FROM students st WHERE st.school_id = s.id AND st.status = 'active') AS students,
-        (SELECT COUNT(*) FROM teachers t WHERE t.school_id = s.id AND t.status = 'active') AS teachers,
+        (SELECT COUNT(*) FROM teacher_schools tm WHERE tm.school_id = s.id AND tm.status = 'active') AS teachers,
         (SELECT COUNT(*) FROM applications a WHERE a.school_id = s.id) AS applications
        FROM schools s ORDER BY s.name`,
     ).all();
@@ -59,6 +71,9 @@ tenants.post('/schools', requireRoles('super_admin'), async (c) => {
   if (!body.name || !body.category) return bad('Nama dan kategori sekolah diperlukan. / School name and category are required.');
   if (!['tahfiz', 'islamic_studies'].includes(body.category)) return bad('Kategori tidak sah. / Invalid category.');
   if (!body.adminEmail || !body.adminName) return bad('Butiran pentadbir sekolah diperlukan. / School admin details are required.');
+  const monthlyFee = feeCents(body.monthlyFeeCents);
+  const registrationFee = feeCents(body.registrationFeeCents);
+  if (monthlyFee === null || registrationFee === null) return bad(FEE_REQUIRED, 400, { code: 'fees_required' });
   const schoolId = id('sch');
   const now = nowIso();
   const baseSlug = slugify(body.name);
@@ -88,8 +103,8 @@ tenants.post('/schools', requireRoles('super_admin'), async (c) => {
       Number(body.regGenDay || 1),
       Number(body.regDueMonth || 1),
       Number(body.regDueDay || 31),
-      Number(body.monthlyFeeCents || 15000),
-      Number(body.registrationFeeCents || 20000),
+      monthlyFee,
+      registrationFee,
       body.bankName || '',
       body.bankAccount || '',
       body.paymentInstructionsBm || 'Sila buat pindahan bank ke akaun sekolah dan muat naik bukti pembayaran di portal.',
@@ -99,11 +114,6 @@ tenants.post('/schools', requireRoles('super_admin'), async (c) => {
       'active',
       now,
     )
-    .run();
-  await c.env.DB.prepare(
-    'INSERT INTO fee_plans (id, school_id, name, monthly_fee_cents, registration_fee_cents, active, created_at) VALUES (?,?,?,?,?,1,?)',
-  )
-    .bind(id('fee'), schoolId, 'Standard', Number(body.monthlyFeeCents || 15000), Number(body.registrationFeeCents || 20000), now)
     .run();
   const existing = await c.env.DB.prepare('SELECT * FROM users WHERE lower(email) = lower(?)').bind(body.adminEmail).first();
   let adminUser = existing;
@@ -132,7 +142,9 @@ tenants.post('/schools', requireRoles('super_admin'), async (c) => {
   )
     .bind(id('url'), adminUser.id, schoolId, 'school_admin', now)
     .run();
-  await audit(c, 'create', 'school', schoolId, { after: { name: body.name, category: body.category } });
+  await audit(c, 'create', 'school', schoolId, {
+    after: { name: body.name, category: body.category, monthly_fee_cents: monthlyFee, registration_fee_cents: registrationFee },
+  });
   return json({ school: await c.env.DB.prepare('SELECT * FROM schools WHERE id = ?').bind(schoolId).first() }, 201);
 });
 
@@ -152,6 +164,13 @@ tenants.patch('/schools/:id', async (c) => {
     updates[f] = typeof body[f] === 'number' ? body[f] : String(body[f]);
   }
   if (!Object.keys(updates).length) return bad('Tiada perubahan. / Nothing to update.');
+  // Fees are required money values; a change applies only to invoices created afterwards.
+  for (const f of ['monthly_fee_cents', 'registration_fee_cents']) {
+    if (updates[f] === undefined) continue;
+    const v = feeCents(updates[f]);
+    if (v === null) return bad(FEE_REQUIRED, 400, { code: 'fees_required' });
+    updates[f] = v;
+  }
   if (updates.monthly_due_day !== undefined) {
     const d = Number(updates.monthly_due_day);
     if (d < 1 || d > 28) return bad('Hari akhir bulanan mesti antara 1 dan 28. / Monthly due day must be 1–28.');
@@ -172,31 +191,15 @@ tenants.get('/schools/:id', async (c) => {
   if (!auth.isSuper && auth.activeSchool !== idParam) return bad('Forbidden', 403);
   const school = await c.env.DB.prepare('SELECT * FROM schools WHERE id = ?').bind(idParam).first();
   if (!school) return bad('Not found', 404);
-  const plans = await c.env.DB.prepare('SELECT * FROM fee_plans WHERE school_id = ?').bind(idParam).all();
   await audit(c, 'view', 'school', idParam);
-  return json({ school, feePlans: plans.results });
+  return json({ school });
 });
 
 tenants.get('/school-settings', async (c) => {
   const auth = c.get('auth');
   if (!auth.activeSchool) return bad('Tiada konteks sekolah. / No school context.', 400);
   const school = await c.env.DB.prepare('SELECT * FROM schools WHERE id = ?').bind(auth.activeSchool).first();
-  const plans = await c.env.DB.prepare('SELECT * FROM fee_plans WHERE school_id = ?').bind(auth.activeSchool).all();
-  return json({ school, feePlans: plans.results });
-});
-
-tenants.post('/school-settings/fee-plans', requireRoles('school_admin'), async (c) => {
-  const auth = c.get('auth');
-  const body = await readJson(c);
-  if (!body.name) return bad('Nama pelan diperlukan. / Plan name is required.');
-  const planId = id('fee');
-  await c.env.DB.prepare(
-    'INSERT INTO fee_plans (id, school_id, name, monthly_fee_cents, registration_fee_cents, active, created_at) VALUES (?,?,?,?,?,1,?)',
-  )
-    .bind(planId, auth.activeSchool, body.name, Number(body.monthlyFeeCents || 0), Number(body.registrationFeeCents || 0), nowIso())
-    .run();
-  await audit(c, 'create', 'fee_plan', planId, { after: body });
-  return json({ ok: true, id: planId }, 201);
+  return json({ school });
 });
 
 /* ---------------------------- Users ---------------------------- */
@@ -251,7 +254,7 @@ tenants.get('/users/:id', requireRoles('school_admin'), async (c) => {
   }
   const children = user.parent_id
     ? await c.env.DB.prepare(
-        `SELECT ps.student_id, ps.relationship, s.full_name, s.class_name FROM parent_students ps
+        `SELECT ps.student_id, ps.relationship, s.full_name, sc.name AS school_name FROM parent_students ps JOIN schools sc ON sc.id = ps.school_id
          JOIN students s ON s.id = ps.student_id WHERE ps.parent_id = ? ORDER BY s.full_name`,
       )
         .bind(user.parent_id)
@@ -285,9 +288,43 @@ tenants.post('/users', requireRoles('school_admin'), async (c) => {
       return bad('Pelajar tidak dijumpai di sekolah ini. / One or more students are not in this school.', 400);
     }
   }
+  // Parents and teachers follow the shared person rules: IC / Passport No.
+  // search, duplicate warning, and a login whose first password is the IC.
+  const appUrl = c.env.APP_URL || new URL(c.req.url).origin;
+  const person = {
+    ic: body.ic,
+    name: body.fullName,
+    email: body.email,
+    phone: body.phone,
+    address: body.address,
+    createAnyway: body.createAnyway === true,
+    duplicateReason: body.duplicateReason,
+  };
+  if (role === 'teacher') {
+    const r = await registerTeacher(c.env, { ...person, teacherId: body.teacherId || null }, { schoolId, appUrl });
+    if (r.response) return r.response;
+    if (r.login.error) return bad(message(r.login.error, 'teacher'), 409, { code: r.login.error });
+    await audit(c, r.created ? 'create' : 'add_membership', 'teacher', r.teacher.id, {
+      after: { via: 'user', schoolId, userId: r.login.userId, duplicateReason: r.plan.create?.duplicateReason || null },
+    });
+    return json({ id: r.login.userId, teacherId: r.teacher.id, linked: !r.created, loginCreated: r.login.created }, 201);
+  }
+  if (role === 'parent') {
+    const r = await registerParent(c.env, { ...person, parentId: body.parentId || null }, { schoolId, appUrl, studentIds });
+    if (r.response) return r.response;
+    if (r.login.error) return bad(message(r.login.error, 'parent'), 409, { code: r.login.error });
+    await audit(c, r.plan.create ? 'create' : 'link', 'parent', r.parent.id, {
+      after: { via: 'user', userId: r.login.userId, studentIds, duplicateReason: r.plan.create?.duplicateReason || null, matchedByIc: !!r.plan.matchedByIc },
+    });
+    return json({ id: r.login.userId, parentId: r.parent.id, linked: !r.plan.create, loginCreated: r.login.created }, 201);
+  }
+
   const existing = await c.env.DB.prepare('SELECT * FROM users WHERE lower(email) = lower(?)').bind(body.email).first();
   if (existing) return bad('E-mel sudah digunakan. / Email already in use.', 409);
   const ic = body.ic ? await encryptIc(c.env, body.ic) : { enc: null, hash: null, masked: null };
+  if (ic.hash && (await c.env.DB.prepare('SELECT 1 AS ok FROM users WHERE ic_hash = ?').bind(ic.hash).first())) {
+    return bad('No. IC / Pasport ini sudah mempunyai akaun. / This IC / Passport No. already has an account.', 409);
+  }
   const userId = id('usr');
   const password = body.password || 'Mduik@2026';
   if (String(password).length < 8) return bad('Kata laluan mestilah sekurang-kurangnya 8 aksara. / Password must be at least 8 characters.');
@@ -301,44 +338,7 @@ tenants.post('/users', requireRoles('school_admin'), async (c) => {
     db.prepare("INSERT INTO user_roles (id, user_id, school_id, role, started_at, status) VALUES (?,?,?,?,?,'active')")
       .bind(id('url'), userId, schoolId, role, nowIso()),
   ];
-  let parentPlan = null;
-  if (role === 'parent') {
-    parentPlan = await planParent(
-      c.env,
-      {
-        parentId: body.parentId || null,
-        ic: body.ic,
-        name: body.fullName,
-        email: body.email,
-        phone: body.phone,
-        address: body.address,
-        createAnyway: body.createAnyway === true,
-        duplicateReason: body.duplicateReason,
-      },
-      { schoolId },
-    );
-    const failure = planFailure(parentPlan);
-    if (failure) return failure;
-    if (parentPlan.parent?.user_id) return bad('Ibu bapa ini sudah mempunyai akaun. / This parent already has an account.', 409);
-  }
-  if (role === 'teacher') {
-    stmts.push(
-      db.prepare('INSERT INTO teachers (id, school_id, user_id, full_name, email, phone, ic_masked, status, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-        .bind(id('tch'), schoolId, userId, body.fullName, body.email, body.phone || '', ic.masked, 'active', nowIso()),
-    );
-  }
   await db.batch(stmts);
-  if (parentPlan) {
-    const parent = await commitParent(c.env, parentPlan);
-    await db.batch([
-      db.prepare('UPDATE parents SET user_id = ? WHERE id = ?').bind(userId, parent.id),
-      db.prepare('UPDATE users SET parent_id = ? WHERE id = ?').bind(parent.id, userId),
-    ]);
-    for (const sid of studentIds) await linkParentToStudent(c.env, parent.id, sid, schoolId);
-    await audit(c, parentPlan.create ? 'create' : 'link', 'parent', parent.id, {
-      after: { via: 'user', userId, duplicateReason: parentPlan.create?.duplicateReason || null, matchedByIc: !!parentPlan.matchedByIc },
-    });
-  }
   await notify(c.env, {
     schoolId,
     userId,

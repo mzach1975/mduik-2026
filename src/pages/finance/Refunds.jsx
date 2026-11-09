@@ -130,7 +130,7 @@ export default function Refunds() {
         <Field label={t('finance.selectStudent')} required>
           <Select value={form.studentId} onChange={(e) => setForm((f) => ({ ...f, studentId: e.target.value }))}>
             <option value="">{t('common.selectStudent')}</option>
-            {(lookups?.students || []).map((s) => <option key={s.id} value={s.id}>{s.full_name} — {s.class_name || '—'}</option>)}
+            {(lookups?.students || []).map((s) => <option key={s.id} value={s.id}>{s.full_name} — {s.ic_masked || '—'}</option>)}
           </Select>
         </Field>
         <Field label={t('finance.amountLabel')} required hint="RM">

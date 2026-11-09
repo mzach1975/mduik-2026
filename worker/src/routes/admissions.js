@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
 import { authMiddleware, requireRoles, encryptIc, hashIc } from '../lib/auth.js';
-import { id, nowIso, today, readJson, bad, json, yearOf, daysBetween, pageParams, pagingMeta, stripIc } from '../lib/util.js';
+import { id, nowIso, today, readJson, bad, json, yearOf, daysBetween, pageParams, pagingMeta, stripIc, normalizeIc, validIc } from '../lib/util.js';
 import { audit, auditView } from '../lib/audit.js';
 import { notify, notifyRoles, notifyParentsOfStudent, subjectFor } from '../lib/notify.js';
 import { createInvoice, dueDateFor, studentBalance } from '../lib/finance.js';
 import { planParent, planFailure, commitParent, linkParentToStudent, ensureParentLogin } from '../lib/parents.js';
+import { message } from '../lib/people.js';
 
 const admissions = new Hono();
 admissions.use('*', authMiddleware);
@@ -274,7 +275,7 @@ admissions.post('/applications/:id/schedule', requireRoles('school_admin'), asyn
   const when = String(body.scheduledAt).replace('T', ' ');
   await notify(c.env, {
     schoolId: auth.activeSchool,
-    email: app.email,
+    email: app.parent_email,
     name: app.parent_name || app.student_name,
     type: 'interview_scheduled',
     subject: subjectFor('interview_scheduled', app.language) + ` — ${app.reference}`,
@@ -327,7 +328,7 @@ admissions.post('/applications/:id/decision', requireRoles('school_admin'), asyn
     .run();
   await notify(c.env, {
     schoolId: auth.activeSchool,
-    email: app.email,
+    email: app.parent_email,
     name: app.parent_name || app.student_name,
     type: 'decision',
     subject: subjectFor('decision', app.language) + ` — ${app.reference}`,
@@ -355,7 +356,7 @@ admissions.post('/applications/:id/offer', requireRoles('school_admin'), async (
     .run();
   await notify(c.env, {
     schoolId: auth.activeSchool,
-    email: app.email,
+    email: app.parent_email,
     name: app.parent_name || app.student_name,
     type: 'waiting_offer',
     subject: subjectFor('waiting_offer', app.language) + ` — ${app.reference}`,
@@ -407,9 +408,16 @@ admissions.post('/applications/:id/register', requireRoles('school_admin'), asyn
   if (app.status === 'registered') return bad('Sudah didaftarkan. / Already registered.', 409);
   const body = await readJson(c);
   const school = auth.school;
-  const plan = await c.env.DB.prepare('SELECT * FROM fee_plans WHERE school_id = ? AND active = 1 ORDER BY created_at LIMIT 1')
-    .bind(auth.activeSchool)
-    .first();
+
+  // The student's IC / Passport No. is mandatory: from the application, or entered on the registration form.
+  let studentIc = { hash: app.ic_hash, enc: app.ic_enc, masked: app.ic_masked };
+  if (normalizeIc(body.studentIc)) {
+    if (!validIc(body.studentIc)) return bad(message('ic_invalid'), 400, { code: 'student_ic_invalid' });
+    studentIc = await encryptIc(c.env, body.studentIc);
+  }
+  if (!studentIc.hash) {
+    return bad('No. IC / Pasport pelajar diperlukan. / Student IC / Passport No. is required.', 400, { code: 'student_ic_required' });
+  }
 
   // The parent is resolved before anything is written, so a duplicate warning leaves no partial registration.
   const parentPlan = await planParent(
@@ -424,14 +432,14 @@ admissions.post('/applications/:id/register', requireRoles('school_admin'), asyn
       createAnyway: body.createAnyway === true,
       duplicateReason: body.duplicateReason,
     },
-    { schoolId: auth.activeSchool, requireIc: !body.parentId },
+    { schoolId: auth.activeSchool },
   );
   const parentFailure = planFailure(parentPlan);
   if (parentFailure) return parentFailure;
 
-  const existing = app.ic_hash
-    ? await c.env.DB.prepare('SELECT * FROM students WHERE ic_hash = ? AND school_id = ?').bind(app.ic_hash, auth.activeSchool).first()
-    : null;
+  const existing = await c.env.DB.prepare('SELECT * FROM students WHERE ic_hash = ? AND school_id = ?')
+    .bind(studentIc.hash, auth.activeSchool)
+    .first();
 
   // FR-FIN-26: arrears notice on re-registration (never blocks).
   let arrearsWarning = null;
@@ -450,36 +458,28 @@ admissions.post('/applications/:id/register', requireRoles('school_admin'), asyn
 
   const studentId = existing?.id || id('std');
   if (!existing) {
-    const fee = Number(body.monthlyFeeCents ?? plan?.monthly_fee_cents ?? school.monthly_fee_cents);
-    if (!Number.isInteger(fee) || fee < 0 || fee > 100000000) return bad('Yuran bulanan tidak sah. / Invalid monthly fee.');
+    // Monthly invoices use the school's default monthly fee unless an adjustment is approved later.
     await c.env.DB.prepare(
-      `INSERT INTO students (id, school_id, full_name, ic_hash, ic_enc, ic_masked, dob, gender, class_name, address,
-        phone, email, fee_plan_id, monthly_fee_cents, monthly_tracking, status, application_id, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'active',?,?)`,
+      `INSERT INTO students (id, school_id, full_name, ic_hash, ic_enc, ic_masked, dob, gender, address,
+        monthly_fee_cents, monthly_tracking, status, application_id, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,0,0,'active',?,?)`,
     )
       .bind(
         studentId,
         auth.activeSchool,
         body.fullName || app.student_name,
-        app.ic_hash,
-        app.ic_enc,
-        app.ic_masked,
+        studentIc.hash,
+        studentIc.enc,
+        studentIc.masked,
         body.dob || app.dob || null,
         body.gender || app.gender || null,
-        body.className || '',
         body.address || app.address || '',
-        body.phone || app.phone || '',
-        body.email || app.email || '',
-        plan?.id || null,
-        fee,
         appId,
         nowIso(),
       )
       .run();
   } else {
-    await c.env.DB.prepare("UPDATE students SET status = 'active', class_name = COALESCE(NULLIF(?,''), class_name) WHERE id = ?")
-      .bind(body.className || '', studentId)
-      .run();
+    await c.env.DB.prepare("UPDATE students SET status = 'active' WHERE id = ?").bind(studentId).run();
   }
 
   const parent = await commitParent(c.env, parentPlan);
@@ -495,7 +495,7 @@ admissions.post('/applications/:id/register', requireRoles('school_admin'), asyn
 
   const year = yearOf(today());
   const dueDate = dueDateFor(year, school.reg_due_month, school.reg_due_day);
-  const regAmount = plan?.registration_fee_cents ?? school.registration_fee_cents;
+  const regAmount = school.registration_fee_cents;
   const { invoice } = await createInvoice(c.env, {
     schoolId: auth.activeSchool,
     studentId,

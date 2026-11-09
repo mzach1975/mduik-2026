@@ -19,7 +19,7 @@ dashboard.get('/dashboard', async (c) => {
       `SELECT s.id, s.name, s.category, s.state, s.status,
         (SELECT COUNT(*) FROM students st WHERE st.school_id = s.id AND st.status = 'active') AS students,
         (SELECT COUNT(*) FROM students st WHERE st.school_id = s.id AND st.monthly_tracking = 1) AS tracking_on,
-        (SELECT COUNT(*) FROM teachers t WHERE t.school_id = s.id AND t.status = 'active') AS teachers,
+        (SELECT COUNT(*) FROM teacher_schools tm WHERE tm.school_id = s.id AND tm.status = 'active') AS teachers,
         (SELECT COUNT(*) FROM applications a WHERE a.school_id = s.id) AS applications,
         (SELECT COALESCE(SUM(p.amount_cents),0) FROM payments p WHERE p.school_id = s.id AND substr(p.paid_at,1,7) = ? AND (p.receipt_id IS NULL OR p.receipt_id NOT IN (SELECT id FROM receipts WHERE status = 'cancelled'))) AS collected_month,
         (SELECT COALESCE(SUM(i.amount_cents - i.paid_cents - i.credited_cents - i.waived_cents),0) FROM invoices i WHERE i.school_id = s.id AND i.status IN ('unpaid','partial')) AS outstanding
@@ -38,9 +38,9 @@ dashboard.get('/dashboard', async (c) => {
       { schools: 0, students: 0, applications: 0, collected: 0, outstanding: 0 },
     );
     const { results: states } = await db.prepare(
-      `SELECT s.state, COUNT(DISTINCT st.id) AS students, COUNT(DISTINCT t.id) AS teachers
+      `SELECT s.state, COUNT(DISTINCT st.id) AS students, COUNT(DISTINCT t.teacher_id) AS teachers
        FROM schools s LEFT JOIN students st ON st.school_id = s.id AND st.status = 'active'
-       LEFT JOIN teachers t ON t.school_id = s.id AND t.status = 'active'
+       LEFT JOIN teacher_schools t ON t.school_id = s.id AND t.status = 'active'
        GROUP BY s.state ORDER BY s.state`,
     ).all();
     const collectionRate = totals.collected + totals.outstanding > 0
@@ -53,7 +53,7 @@ dashboard.get('/dashboard', async (c) => {
 
   if (role === 'parent') {
     const { results: children } = await db.prepare(
-      `SELECT s.id, s.full_name, s.class_name, s.status, sc.name AS school_name, sc.category,
+      `SELECT s.id, s.full_name, s.status, sc.name AS school_name, sc.category,
         (SELECT COALESCE(SUM(i.amount_cents - i.paid_cents - i.credited_cents - i.waived_cents),0)
          FROM invoices i WHERE i.student_id = s.id AND i.status IN ('unpaid','partial')) AS outstanding,
         (SELECT COALESCE(SUM(cr.remaining_cents),0) FROM credits cr WHERE cr.student_id = s.id) AS credit,
@@ -95,7 +95,7 @@ dashboard.get('/dashboard', async (c) => {
       (SELECT COUNT(*) FROM students WHERE school_id = ? AND status = 'active') AS active_students,
       (SELECT COUNT(*) FROM students WHERE school_id = ? AND monthly_tracking = 1) AS tracking_on,
       (SELECT COUNT(*) FROM students WHERE school_id = ? AND monthly_tracking = 0 AND status = 'active') AS tracking_off,
-      (SELECT COUNT(*) FROM teachers WHERE school_id = ? AND status = 'active') AS teachers,
+      (SELECT COUNT(*) FROM teacher_schools WHERE school_id = ? AND status = 'active') AS teachers,
       (SELECT COALESCE(SUM(amount_cents),0) FROM payments WHERE school_id = ? AND substr(paid_at,1,7) = ? AND (receipt_id IS NULL OR receipt_id NOT IN (SELECT id FROM receipts WHERE status = 'cancelled'))) AS collected_month,
       (SELECT COALESCE(SUM(amount_cents),0) FROM payments WHERE school_id = ? AND paid_at = ? AND (receipt_id IS NULL OR receipt_id NOT IN (SELECT id FROM receipts WHERE status = 'cancelled'))) AS collected_today,
       (SELECT COALESCE(SUM(amount_cents - paid_cents - credited_cents - waived_cents),0) FROM invoices WHERE school_id = ? AND status IN ('unpaid','partial')) AS outstanding,

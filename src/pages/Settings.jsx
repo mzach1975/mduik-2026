@@ -30,7 +30,6 @@ export default function Settings() {
 
   const tabs = [
     ...(canSchool && hasSchool ? [{ id: 'school', label: t('settings.schoolTab') }] : []),
-    ...(canSchool && hasSchool ? [{ id: 'fees', label: t('settings.feesTab') }] : []),
     { id: 'account', label: t('settings.accountTab') },
   ];
 
@@ -42,7 +41,6 @@ export default function Settings() {
       </div>
 
       {tab === 'school' && <SchoolSettings />}
-      {tab === 'fees' && <FeeSettings />}
       {tab === 'account' && <AccountSettings lang={lang} setLang={setLang} patchUser={patchUser} push={push} />}
     </>
   );
@@ -147,9 +145,10 @@ function SchoolSettings() {
       </div>
 
       <h4 className="detaillabel">{t('settings.feesTab')}</h4>
+      <p className="muted smalltext">{t('schools.feeHint')}</p>
       <div className="formgrid">
-        <Field label={t('schools.monthlyFee')} hint="RM"><Input type="number" min="0" step="0.01" value={form.monthly_fee} onChange={(e) => setForm((f) => ({ ...f, monthly_fee: e.target.value }))} /></Field>
-        <Field label={t('schools.registrationFee')} hint="RM"><Input type="number" min="0" step="0.01" value={form.registration_fee} onChange={(e) => setForm((f) => ({ ...f, registration_fee: e.target.value }))} /></Field>
+        <Field label={t('schools.monthlyFee')} hint="RM" required><Input type="number" min="0" step="0.01" value={form.monthly_fee} onChange={(e) => setForm((f) => ({ ...f, monthly_fee: e.target.value }))} /></Field>
+        <Field label={t('schools.registrationFee')} hint="RM" required><Input type="number" min="0" step="0.01" value={form.registration_fee} onChange={(e) => setForm((f) => ({ ...f, registration_fee: e.target.value }))} /></Field>
         <Field label={t('schools.monthlyDueDay')} hint={t('settings.dueTitle')}><Input type="number" min="1" max="28" value={form.monthly_due_day} onChange={(e) => setForm((f) => ({ ...f, monthly_due_day: e.target.value }))} /></Field>
         <Field label={t('schools.regDueDate')}><Input type="number" min="1" max="28" value={form.reg_due_day} onChange={(e) => setForm((f) => ({ ...f, reg_due_day: e.target.value }))} /></Field>
         <Field label={t('schools.invoicePrefix')}><Input value={form.invoice_prefix} onChange={(e) => setForm((f) => ({ ...f, invoice_prefix: e.target.value }))} /></Field>
@@ -165,96 +164,6 @@ function SchoolSettings() {
       </div>
 
       <Alert tone="info">{t('settings.billingNote')}</Alert>
-    </Card>
-  );
-}
-
-function FeeSettings() {
-  const { t, money } = useI18n();
-  const { push } = useToast();
-  const { data, loading, reload } = useApi('/school-settings');
-  const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: '', monthlyFee: '', registrationFee: '' });
-  const [busy, setBusy] = useState(false);
-
-  async function save() {
-    setBusy(true);
-    try {
-      await api.post('/school-settings/fee-plans', {
-        name: form.name,
-        monthlyFeeCents: Math.round(Number(form.monthlyFee) * 100),
-        registrationFeeCents: Math.round(Number(form.registrationFee) * 100),
-      });
-      push(t('common.success'));
-      setOpen(false);
-      setForm({ name: '', monthlyFee: '', registrationFee: '' });
-      await reload(true);
-    } catch (err) {
-      push(err.message, 'danger');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Card
-      title={t('settings.feePlans')}
-      subtitle={t('settings.feesTab')}
-      actions={<button type="button" className="btn btn--primary btn--sm" onClick={() => setOpen(true)}><Icon name="plus" size={15} /> {t('settings.addFeePlan')}</button>}
-      padded={false}
-    >
-      {loading ? (
-        <div className="pad"><Loading /></div>
-      ) : !data?.feePlans?.length ? (
-        <div className="empty"><Icon name="invoice" size={24} /><p>{t('settings.noFeePlans')}</p></div>
-      ) : (
-        <div className="planlist">
-          {data.feePlans.map((p) => (
-            <div className="planrow" key={p.id}>
-              <div>
-                <strong>{p.name}</strong>
-                <small>{t('settings.feePlans')}</small>
-              </div>
-              <div>
-                <span>{t('schools.monthlyFee')}</span>
-                <strong>{money(p.monthly_fee_cents)}</strong>
-              </div>
-              <div>
-                <span>{t('schools.registrationFee')}</span>
-                <strong>{money(p.registration_fee_cents)}</strong>
-              </div>
-              <Badge tone={p.active ? 'green' : 'slate'} dot>{p.active ? t('common.active') : t('common.inactive')}</Badge>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <Modal
-        open={open}
-        onClose={() => setOpen(false)}
-        title={t('settings.addFeePlan')}
-        footer={
-          <>
-            <button type="button" className="btn btn--ghost" onClick={() => setOpen(false)}>{t('common.cancel')}</button>
-            <button type="button" className="btn btn--primary" onClick={save} disabled={busy || !form.name}>
-              {busy && <span className="spinner spinner--light" />} {t('common.save')}
-            </button>
-          </>
-        }
-      >
-        <Field label={t('settings.planName')} required>
-          <Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
-        </Field>
-        <div className="formgrid">
-          <Field label={t('schools.monthlyFee')} hint="RM">
-            <Input type="number" min="0" step="0.01" value={form.monthlyFee} onChange={(e) => setForm((f) => ({ ...f, monthlyFee: e.target.value }))} />
-          </Field>
-          <Field label={t('schools.registrationFee')} hint="RM">
-            <Input type="number" min="0" step="0.01" value={form.registrationFee} onChange={(e) => setForm((f) => ({ ...f, registrationFee: e.target.value }))} />
-          </Field>
-        </div>
-        <Alert tone="info">{t('settings.registrationNote')}</Alert>
-      </Modal>
     </Card>
   );
 }

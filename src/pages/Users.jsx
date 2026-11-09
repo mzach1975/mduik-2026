@@ -180,6 +180,9 @@ function UserModal({ modal, onClose, onSaved }) {
   const schools = schoolData?.schools || [];
   const schoolStudents = lookups?.students || [];
 
+  // Parents and teachers: IC / Passport No. is required and the first password is the IC.
+  const isPerson = !isEdit && ['parent', 'teacher'].includes(form.role);
+
   async function save() {
     setBusy(true);
     try {
@@ -200,14 +203,15 @@ function UserModal({ modal, onClose, onSaved }) {
           email: form.email,
           phone: form.phone,
           ic: form.ic,
-          password: form.password,
+          password: isPerson ? undefined : form.password,
           language: form.language,
           role: form.role,
           schoolId: form.schoolId,
           studentIds: form.role === 'parent' ? studentIds : undefined,
           parentId: form.role === 'parent' ? dup?.parentId || undefined : undefined,
-          createAnyway: form.role === 'parent' && dup?.createAnyway ? true : undefined,
-          duplicateReason: form.role === 'parent' && dup?.createAnyway ? dup.reason : undefined,
+          teacherId: form.role === 'teacher' ? dup?.parentId || undefined : undefined,
+          createAnyway: isPerson && dup?.createAnyway ? true : undefined,
+          duplicateReason: isPerson && dup?.createAnyway ? dup.reason : undefined,
         });
         onSaved(res.temporaryPassword ? `${t('users.temporaryPassword')}: ${res.temporaryPassword}` : t('users.created'));
       }
@@ -240,7 +244,7 @@ function UserModal({ modal, onClose, onSaved }) {
   const dupPending = dup && !dup.parentId && !(dup.createAnyway && dup.reason.trim().length >= 5);
   const canSubmit = isEdit
     ? form.fullName?.length > 0
-    : form.fullName?.length > 0 && /\S+@\S+\.\S+/.test(form.email || '') && (isSuper ? form.schoolId : true) && !dupPending;
+    : form.fullName?.length > 0 && /\S+@\S+\.\S+/.test(form.email || '') && (isSuper ? form.schoolId : true) && !dupPending && (!isPerson || (String(form.ic || '').trim() && String(form.phone || '').trim()));
 
   return (
     <>
@@ -302,17 +306,21 @@ function UserModal({ modal, onClose, onSaved }) {
               <Field label={t('users.email')} required={!isEdit}>
                 <Input type="email" value={form.email || ''} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} disabled={isEdit} />
               </Field>
-              <Field label={t('common.phone')}>
+              <Field label={t('common.phone')} required={isPerson}>
                 <Input value={form.phone || ''} onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} placeholder="+60" />
               </Field>
               {!isEdit ? (
                 <>
-                  <Field label={t('common.ic')} hint={t('students.icHint')}>
-                    <Input value={form.ic || ''} onChange={(e) => setForm((f) => ({ ...f, ic: e.target.value }))} placeholder="900101-14-5566" />
+                  <Field label={t('common.ic')} hint={t('students.icHint')} required={isPerson}>
+                    <Input value={form.ic || ''} onChange={(e) => setForm((f) => ({ ...f, ic: e.target.value }))} autoComplete="off" />
                   </Field>
-                  <Field label={t('auth.password')} hint={t('users.passwordHint')}>
-                    <Input type="text" value={form.password || ''} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="Mduik@2026" />
-                  </Field>
+                  {isPerson ? (
+                    <Alert tone="info">{t('users.firstPasswordIsIc')}</Alert>
+                  ) : (
+                    <Field label={t('auth.password')} hint={t('users.passwordHint')}>
+                      <Input type="text" value={form.password || ''} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="Mduik@2026" />
+                    </Field>
+                  )}
                 </>
               ) : canChangeStatus && (
                 <Field label={t('users.accountStatus')}>
@@ -337,7 +345,7 @@ function UserModal({ modal, onClose, onSaved }) {
                   {schoolStudents.map((s) => (
                     <Checkbox
                       key={s.id}
-                      label={`${s.full_name} — ${s.class_name || '—'}`}
+                      label={`${s.full_name} — ${s.ic_masked || '—'}`}
                       checked={studentIds.includes(s.id)}
                       onChange={(e) => setStudentIds((prev) => (e.target.checked ? [...prev, s.id] : prev.filter((x) => x !== s.id)))}
                     />
@@ -346,7 +354,7 @@ function UserModal({ modal, onClose, onSaved }) {
               </div>
             )}
 
-            {!isEdit && form.role === 'parent' && dup && (
+            {isPerson && dup && (
               <div className="parentpicker__dups">
                 <Alert tone="warning" title={t('parentRecord.dupTitle')}>{t('parentRecord.dupHint')}</Alert>
                 <ul className="duplist">
@@ -355,14 +363,17 @@ function UserModal({ modal, onClose, onSaved }) {
                       <div>
                         <strong>{m.full_name}</strong>
                         <small>{[m.email, m.phone, m.ic_masked].filter(Boolean).join(' · ')}</small>
+                        <span className="duplist__tags">
+                          <Badge tone="slate">{t(m.kind === 'teacher' ? 'parentRecord.kindTeacher' : 'parentRecord.kindParent')}</Badge>
+                        </span>
                       </div>
-                      <button
+                      {(m.kind || 'parent') === form.role && <button
                         type="button"
                         className={`btn btn--sm ${dup.parentId === m.id ? 'btn--primary' : 'btn--outline'}`}
                         onClick={() => setDup((d) => ({ ...d, parentId: d.parentId === m.id ? null : m.id, createAnyway: false }))}
                       >
                         {t('parentRecord.linkExisting')}
-                      </button>
+                      </button>}
                     </li>
                   ))}
                 </ul>
@@ -386,7 +397,7 @@ function UserModal({ modal, onClose, onSaved }) {
                   {detail.children.map((c) => (
                     <div className="childlink" key={c.student_id}>
                       <span className="avatar avatar--teal">{c.full_name.split(' ').map((x) => x[0]).slice(0, 2).join('')}</span>
-                      <div><strong>{c.full_name}</strong><small>{c.class_name || '—'} · {c.relationship}</small></div>
+                      <div><strong>{c.full_name}</strong><small>{c.relationship}</small></div>
                     </div>
                   ))}
                 </div>

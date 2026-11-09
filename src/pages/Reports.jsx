@@ -36,16 +36,14 @@ export default function Reports() {
   const [selected, setSelected] = useState('');
   const [from, setFrom] = useState(yearStartIso());
   const [to, setTo] = useState(todayIso());
-  const [klass, setKlass] = useState('');
   const { data: listData } = useApi('/reports');
-  const { data: classData } = useApi('/students/classes');
   const reports = listData?.reports || [];
 
   useEffect(() => {
     if (reports.length && !reports.includes(selected)) setSelected(reports[0]);
   }, [listData, selected]);
 
-  const path = selected ? `/reports/${selected}?from=${from}&to=${to}${klass ? `&class=${encodeURIComponent(klass)}` : ''}` : null;
+  const path = selected ? `/reports/${selected}?from=${from}&to=${to}` : null;
   const { data, loading, error, reload } = useApi(path, { enabled: !!path });
   const report = data;
 
@@ -101,20 +99,14 @@ export default function Reports() {
               <Field label={t('common.toDate')}>
                 <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
               </Field>
-              <Field label={t('common.class')}>
-                <Select value={klass} onChange={(e) => setKlass(e.target.value)}>
-                  <option value="">{t('reports.allClasses')}</option>
-                  {(classData?.classes || []).map((c) => <option key={c.class_name} value={c.class_name}>{c.class_name}</option>)}
-                </Select>
-              </Field>
               <div className="reportfilters__actions">
                 <button type="button" className="btn btn--ghost btn--sm" onClick={() => reload()}>
                   <Icon name="refresh" size={15} /> {t('reports.generate')}
                 </button>
                 <span className="export-group">
-                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => downloadFile(`/reports/${selected}?from=${from}&to=${to}${klass ? `&class=${encodeURIComponent(klass)}` : ''}&format=csv`)}>CSV</button>
-                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => downloadFile(`/reports/${selected}?from=${from}&to=${to}${klass ? `&class=${encodeURIComponent(klass)}` : ''}&format=xls`)}>Excel</button>
-                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => downloadFile(`/reports/${selected}?from=${from}&to=${to}${klass ? `&class=${encodeURIComponent(klass)}` : ''}&format=pdf`)}>PDF</button>
+                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => downloadFile(`/reports/${selected}?from=${from}&to=${to}&format=csv`)}>CSV</button>
+                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => downloadFile(`/reports/${selected}?from=${from}&to=${to}&format=xls`)}>Excel</button>
+                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => downloadFile(`/reports/${selected}?from=${from}&to=${to}&format=pdf`)}>PDF</button>
                 </span>
               </div>
             </div>

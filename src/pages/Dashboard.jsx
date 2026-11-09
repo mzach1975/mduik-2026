@@ -390,7 +390,7 @@ function ParentDashboard({ data }) {
                 <Avatar name={child.full_name} size={46} />
                 <div>
                   <strong>{child.full_name}</strong>
-                  <small>{child.class_name || '—'} · {child.school_name}</small>
+                  <small>{child.school_name}</small>
                 </div>
                 <StatusBadge status={child.status} />
               </div>

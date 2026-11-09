@@ -97,6 +97,27 @@ export async function setup() {
     return { status: res.status, data };
   }
 
+  /** A request with an explicit cookie (or none), returning the session cookie the Worker set. */
+  async function raw(method, path, body, cookie) {
+    const init = { method, headers: {} };
+    if (cookie) init.headers.cookie = cookie;
+    if (body !== undefined) {
+      init.headers['content-type'] = 'application/json';
+      init.body = JSON.stringify(body);
+    }
+    const res = await worker.fetch(new Request(`http://test/api${path}`, init), env, { waitUntil() {} });
+    const data = await res.json().catch(() => null);
+    const set = res.headers.get('set-cookie') || '';
+    const m = set.match(new RegExp(`${SESSION_COOKIE}=([^;]*)`));
+    return { status: res.status, data, cookie: m && m[1] ? `${SESSION_COOKIE}=${m[1]}` : null };
+  }
+
+  /** A parent/teacher login used directly in a test, with the first-login password change already done. */
+  function asUser(userId, school) {
+    DB.db.prepare('UPDATE users SET must_change_password = 0 WHERE id = ?').run(userId);
+    return { id: userId, school };
+  }
+
   let appSeq = 0;
   /** An accepted application ready for the registration form. */
   function acceptedApplication(schoolId, { studentName = 'Pelajar', parentName = 'Ibu Bapa', parentEmail = '', parentPhone = '' } = {}) {
@@ -120,5 +141,5 @@ export async function setup() {
 
   const one = (q, ...p) => DB.db.prepare(q).get(...p.map(clean));
   const many = (q, ...p) => DB.db.prepare(q).all(...p.map(clean));
-  return { env, DB, users, call, sql, one, many, acceptedApplication };
+  return { env, DB, users, call, raw, asUser, sql, one, many, acceptedApplication };
 }

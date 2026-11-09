@@ -23,8 +23,13 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     refresh();
     const onUnauthorized = () => setUser(null);
+    const onPasswordChange = () => setUser((prev) => (prev ? { ...prev, mustChangePassword: true } : prev));
     window.addEventListener('mduik:unauthorized', onUnauthorized);
-    return () => window.removeEventListener('mduik:unauthorized', onUnauthorized);
+    window.addEventListener('mduik:password-change', onPasswordChange);
+    return () => {
+      window.removeEventListener('mduik:unauthorized', onUnauthorized);
+      window.removeEventListener('mduik:password-change', onPasswordChange);
+    };
   }, [refresh]);
 
   const login = useCallback(async (identifier, password, schoolId) => {

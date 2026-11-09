@@ -33,7 +33,6 @@ export default function StudentDetail() {
   const { t, money, date, statusLabel } = useI18n();
   const { push } = useToast();
   const { data, loading, error, reload } = useApi(`/students/${id}`);
-  const { data: lookups } = useApi('/lookups');
   const [tab, setTab] = useState('invoices');
   const [modal, setModal] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -71,7 +70,7 @@ export default function StudentDetail() {
         }
         eyebrow={student.ic_masked || undefined}
         title={student.full_name}
-        subtitle={`${student.class_name || '—'} · ${t('students.registeredOn')} ${date(student.created_at)}`}
+        subtitle={`${t('students.registeredOn')} ${date(student.created_at)}`}
         actions={
           <>
             <StatusBadge status={student.status} />
@@ -90,7 +89,7 @@ export default function StudentDetail() {
       <div className="statgrid statgrid--3">
         <StatCard label={t('common.outstanding')} value={money(balance.outstanding)} tone="rose" icon="clock" />
         <StatCard label={t('common.credit')} value={money(balance.credit)} tone="teal" icon="invoice" />
-        <StatCard label={t('students.monthlyFee')} value={money(student.monthly_fee_cents)} tone="green" icon="payment" hint={student.monthly_tracking ? t('students.trackingOn') : t('students.trackingOff')} />
+        <StatCard label={t('students.monthlyFee')} value={money(student.monthly_fee_cents)} tone="green" icon="payment" hint={student.has_adjusted_rate ? t('students.adjustedRate') : t('students.schoolDefaultRate')} />
       </div>
 
       <div className="detailgrid">
@@ -102,16 +101,13 @@ export default function StudentDetail() {
                 { label: t('common.ic'), value: student.ic_masked || '—' },
                 { label: t('students.dob'), value: student.dob ? date(student.dob) : '—' },
                 { label: t('students.gender'), value: student.gender ? t(student.gender === 'male' ? 'apply.male' : 'apply.female') : '—' },
-                { label: t('common.phone'), value: student.phone || '—' },
-                { label: t('common.email'), value: student.email || '—' },
                 { label: t('common.address'), value: student.address || '—' },
-                { label: t('common.class'), value: student.class_name || '—' },
               ]}
             />
           </Card>
 
           <Card
-            title={t('students.feePlan')}
+            title={t('students.feeSection')}
             actions={
               isAdmin && (
                 <button type="button" className="btn btn--outline btn--sm" onClick={() => setModal('tracking')}>
@@ -122,8 +118,8 @@ export default function StudentDetail() {
           >
             <KeyValue
               items={[
-                { label: t('students.feePlanLabel'), value: student.fee_plan_name || '—' },
                 { label: t('students.monthlyFee'), value: money(student.monthly_fee_cents) },
+                { label: t('students.rateSource'), value: student.has_adjusted_rate ? t('students.adjustedRate') : t('students.schoolDefaultRate') },
                 { label: t('students.tracking'), value: <Badge tone={student.monthly_tracking ? 'green' : 'slate'} dot>{student.monthly_tracking ? t('students.trackingOn') : t('students.trackingOff')}</Badge> },
                 { label: t('students.trackingStart'), value: student.tracking_start ? date(`${student.tracking_start}-01`) : '—' },
                 { label: t('students.reminders'), value: <Badge tone={student.reminders_enabled ? 'green' : 'slate'} dot>{student.reminders_enabled ? t('students.remindersOn') : t('students.remindersOff')}</Badge> },
@@ -148,7 +144,7 @@ export default function StudentDetail() {
             </div>
           </Card>
 
-          <Card title={t('students.parents')} actions={isAdmin && <button type="button" className="btn btn--ghost btn--sm" onClick={() => setModal('parent')}><Icon name="plus" size={15} /> {t('students.addParent')}</button>}>
+          <Card title={t('students.parents')} subtitle={t('students.parentsReadOnly')}>
             {!parents.length ? (
               <p className="muted">{t('common.noData')}</p>
             ) : (
@@ -158,7 +154,7 @@ export default function StudentDetail() {
                     <span className="avatar avatar--sky">{p.full_name.split(' ').map((x) => x[0]).slice(0, 2).join('')}</span>
                     <div className="parentrow__text">
                       <strong>{p.full_name}</strong>
-                      <small>{p.email || '—'} · {p.phone || '—'}</small>
+                      <small>{p.ic_masked || '—'} · {p.email || '—'} · {p.phone || '—'}</small>
                     </div>
                     <Badge tone="sand">{t(`students.${p.relationship === 'mother' ? 'mother' : p.relationship === 'father' ? 'father' : 'guardian'}`)}</Badge>
                   </div>
@@ -259,9 +255,8 @@ export default function StudentDetail() {
         </div>
       </div>
 
-      <EditModal open={modal === 'edit'} onClose={() => setModal(null)} busy={busy} student={student} lookups={lookups} onSubmit={(payload) => act(() => api.patch(`/students/${id}`, payload), t('students.updated'))} />
+      <EditModal open={modal === 'edit'} onClose={() => setModal(null)} busy={busy} student={student} onSubmit={(payload) => act(() => api.patch(`/students/${id}`, payload), t('students.updated'))} />
       <AdjustmentModal open={modal === 'adjustment'} onClose={() => setModal(null)} busy={busy} student={student} onSubmit={(payload) => act(() => api.post(`/students/${id}/adjustments`, payload), t('common.success'))} />
-      <LinkParentModal open={modal === 'parent'} onClose={() => setModal(null)} busy={busy} parents={lookups?.parents || []} onSubmit={(payload) => act(() => api.post(`/parents/${payload.parentId}/link`, { studentId: id, relationship: payload.relationship }), t('common.success'))} />
       <ConfirmDialog
         open={modal === 'tracking'}
         onClose={() => setModal(null)}
@@ -308,20 +303,15 @@ export default function StudentDetail() {
   );
 }
 
-function EditModal({ open, onClose, onSubmit, busy, student, lookups }) {
+function EditModal({ open, onClose, onSubmit, busy, student }) {
   const { t } = useI18n();
   const [form, setForm] = useState({
     full_name: student.full_name || '',
     ic: '',
     dob: student.dob || '',
     gender: student.gender || '',
-    class_name: student.class_name || '',
     address: student.address || '',
-    phone: student.phone || '',
-    email: student.email || '',
     status: student.status || 'active',
-    fee_plan_id: student.fee_plan_id || '',
-    monthly_fee_cents: (student.monthly_fee_cents / 100).toFixed(2),
   });
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -338,7 +328,7 @@ function EditModal({ open, onClose, onSubmit, busy, student, lookups }) {
             type="button"
             className="btn btn--primary"
             disabled={busy}
-            onClick={() => onSubmit({ ...form, ic: form.ic || undefined, monthly_fee_cents: form.monthly_fee_cents ? Math.round(Number(form.monthly_fee_cents) * 100) : student.monthly_fee_cents })}
+            onClick={() => onSubmit({ ...form, ic: form.ic || undefined })}
           >
             {busy && <span className="spinner spinner--light" />} {t('students.saveStudent')}
           </button>
@@ -362,15 +352,6 @@ function EditModal({ open, onClose, onSubmit, busy, student, lookups }) {
             <option value="female">{t('apply.female')}</option>
           </Select>
         </Field>
-        <Field label={t('common.class')}>
-          <Input value={form.class_name} onChange={(e) => set('class_name', e.target.value)} />
-        </Field>
-        <Field label={t('common.phone')}>
-          <Input value={form.phone} onChange={(e) => set('phone', e.target.value)} />
-        </Field>
-        <Field label={t('common.email')}>
-          <Input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} />
-        </Field>
         <Field label={t('common.address')} className="formgrid__full">
           <Textarea rows={2} value={form.address} onChange={(e) => set('address', e.target.value)} />
         </Field>
@@ -381,15 +362,6 @@ function EditModal({ open, onClose, onSubmit, busy, student, lookups }) {
             <option value="graduated">{t('students.graduated')}</option>
             <option value="applicant">{t('students.applicantStatus')}</option>
           </Select>
-        </Field>
-        <Field label={t('students.choosePlan')}>
-          <Select value={form.fee_plan_id} onChange={(e) => set('fee_plan_id', e.target.value)}>
-            <option value="">{t('common.select')}</option>
-            {(lookups?.feePlans || []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </Select>
-        </Field>
-        <Field label={t('students.monthlyFee')}>
-          <Input type="number" min="0" step="0.01" value={form.monthly_fee_cents} onChange={(e) => set('monthly_fee_cents', e.target.value)} />
         </Field>
       </div>
     </Modal>
@@ -432,44 +404,6 @@ function AdjustmentModal({ open, onClose, onSubmit, busy, student }) {
         <Textarea rows={3} value={reason} onChange={(e) => setReason(e.target.value)} />
       </Field>
       <Alert tone="info">{t('finance.pendingReview')}</Alert>
-    </Modal>
-  );
-}
-
-function LinkParentModal({ open, onClose, onSubmit, busy, parents }) {
-  const { t } = useI18n();
-  const [parentId, setParentId] = useState('');
-  const [relationship, setRelationship] = useState('guardian');
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title={t('students.addParent')}
-      footer={
-        <>
-          <button type="button" className="btn btn--ghost" onClick={onClose}>{t('common.cancel')}</button>
-          <button type="button" className="btn btn--primary" disabled={busy || !parentId} onClick={() => onSubmit({ parentId, relationship })}>
-            {busy && <span className="spinner spinner--light" />} {t('common.save')}
-          </button>
-        </>
-      }
-    >
-      <Field label={t('students.chooseParent')} required>
-        <Select value={parentId} onChange={(e) => setParentId(e.target.value)}>
-          <option value="">{t('common.select')}</option>
-          {parents.map((p) => (
-            <option key={p.id} value={p.id}>{p.full_name} — {p.email || p.phone}</option>
-          ))}
-        </Select>
-      </Field>
-      <Field label={t('students.relationship')}>
-        <Select value={relationship} onChange={(e) => setRelationship(e.target.value)}>
-          <option value="guardian">{t('students.guardian')}</option>
-          <option value="father">{t('students.father')}</option>
-          <option value="mother">{t('students.mother')}</option>
-        </Select>
-      </Field>
     </Modal>
   );
 }

@@ -161,7 +161,6 @@ export default function Invoices() {
                   render: (r) => (
                     <span className="stack-cell">
                       <strong>{r.student_name}</strong>
-                      <small>{r.class_name || '—'}</small>
                     </span>
                   ),
                 },
@@ -239,7 +238,6 @@ function InvoiceModal({ id, onClose, onStudent }) {
           <KeyValue
             items={[
               { label: t('finance.student'), value: invoice.student_name },
-              { label: t('common.class'), value: invoice.class_name || '—' },
               { label: t('common.type'), value: t(`common.${invoice.type === 'registration' ? 'registration' : invoice.type === 'opening' ? 'opening' : invoice.type === 'adjustment' ? 'adjustment' : 'monthly'}`) },
               { label: t('common.period'), value: invoice.period || '—' },
               { label: t('common.issueDate'), value: date(invoice.issue_date) },

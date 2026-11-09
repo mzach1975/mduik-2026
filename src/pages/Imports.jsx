@@ -66,7 +66,7 @@ export default function Imports() {
         `/imports/${report.batch.id}/confirm`,
         dupRows ? { duplicateAction: dupAction, duplicateReason: dupAction === 'create' ? dupReason : undefined } : {},
       );
-      push(`${t('imports.imported')}: ${res.imported}${res.parentSkipped ? ` · ${t('parentRecord.importSkipped', { n: res.parentSkipped })}` : ''}`);
+      push([`${t('imports.imported')}: ${res.imported}`, res.linked ? t('imports.linkedCount', { n: res.linked }) : '', res.skipped ? t('imports.skippedCount', { n: res.skipped }) : '', res.parentSkipped ? t('parentRecord.importSkipped', { n: res.parentSkipped }) : ''].filter(Boolean).join(' · '));
       setReport(null);
       setFile(null);
       await reload(true);
@@ -194,7 +194,7 @@ export default function Imports() {
                   label: t('imports.errors'),
                   render: (r) => {
                     if (r.errors.length) return <span className="text-rose">{r.errors.join('; ')}</span>;
-                    if (r.duplicates?.length) return <Badge tone="amber">{t('parentRecord.dupBadge', { name: r.duplicates[0].full_name })}</Badge>;
+                    if (r.duplicates?.length) return <Badge tone="amber">{t('parentRecord.dupBadge', { name: r.duplicates[0].full_name }) + (r.duplicates[0].matchedOn?.length ? ` (${r.duplicates[0].matchedOn.map((k) => t(`parentRecord.matched_${k}`)).join(', ')})` : '')}</Badge>;
                     if (r.parentMatch) return <Badge tone="teal">{t('parentRecord.icMatchBadge', { name: r.parentMatch.full_name })}</Badge>;
                     return <Badge tone="green">{t('imports.validRows')}</Badge>;
                   },

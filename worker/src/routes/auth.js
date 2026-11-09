@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import {
   hashPassword,
-  verifyPassword,
+  verifyUserPassword,
+  isOwnIc,
   setSession,
   clearSession,
   publicUser,
@@ -16,7 +17,7 @@ import {
 } from '../lib/auth.js';
 import { getCookie } from 'hono/cookie';
 import { resolveAuth } from '../lib/auth.js';
-import { id, nowIso, readJson, bad, json, normalizeIc } from '../lib/util.js';
+import { id, nowIso, readJson, bad, json, normalizeIc, validIc } from '../lib/util.js';
 import { audit } from '../lib/audit.js';
 
 const auth = new Hono();
@@ -27,17 +28,19 @@ auth.post('/login', async (c) => {
   const password = String(body.password || '');
   if (!identifier || !password) return bad('Sila masukkan e-mel/IC dan kata laluan. / Enter email/IC and password.');
   const ip = c.req.header('cf-connecting-ip') || '';
-  const account = identifier.toLowerCase();
+  // IC variants (spaces, hyphens, case) count as one account for the lockout.
+  const account = identifier.includes('@') ? identifier.toLowerCase() : normalizeIc(identifier);
   if (await isLockedOut(c.env, account, ip)) {
     return bad('Akaun dikunci sementara kerana terlalu banyak percubaan. Cuba lagi dalam 15 minit. / Account temporarily locked. Try again in 15 minutes.', 429);
   }
 
+  // Login ID: email, or the normalised IC / Passport No. (matched by its keyed hash).
   let user = await c.env.DB.prepare('SELECT * FROM users WHERE lower(email) = lower(?)').bind(identifier).first();
-  if (!user && normalizeIc(identifier)) {
+  if (!user && !identifier.includes('@') && validIc(identifier)) {
     const icHash = await hashIc(c.env, identifier);
     user = await c.env.DB.prepare('SELECT * FROM users WHERE ic_hash = ?').bind(icHash).first();
   }
-  const ok = user ? await verifyPassword(password, user.password_hash) : false;
+  const ok = user ? await verifyUserPassword(c.env, user, password) : false;
   await recordLoginAttempt(c.env, account, ip, ok);
   if (!ok) return bad('Maklumat log masuk tidak sah. / Invalid login details.', 401);
   if (user.status !== 'active') return bad('Akaun dinyahaktifkan. / Account deactivated.', 403);
@@ -115,6 +118,9 @@ auth.post('/context', async (c) => {
 auth.patch('/profile', async (c) => {
   const session = await resolveAuth(c.env, getCookie(c, SESSION_COOKIE));
   if (!session) return bad('Unauthorized', 401);
+  if (session.user.must_change_password) {
+    return bad('Sila tukar kata laluan anda dahulu. / Please change your password first.', 403, { code: 'password_change_required' });
+  }
   c.set('auth', session);
   const body = await readJson(c);
   const allowed = {};
@@ -137,19 +143,28 @@ auth.post('/change-password', async (c) => {
   if (!session) return bad('Unauthorized', 401);
   c.set('auth', session);
   const body = await readJson(c);
-  if (!(await verifyPassword(String(body.currentPassword || ''), session.user.password_hash))) {
+  if (!(await verifyUserPassword(c.env, session.user, String(body.currentPassword || '')))) {
     return bad('Kata laluan semasa tidak betul. / Current password is incorrect.', 400);
   }
-  if (String(body.newPassword || '').length < 8) {
-    return bad('Kata laluan baharu mestilah sekurang-kurangnya 8 aksara. / New password must be at least 8 characters.');
-  }
-  const hash = await hashPassword(body.newPassword);
-  await c.env.DB.prepare('UPDATE users SET password_hash = ? WHERE id = ?').bind(hash, session.user.id).run();
+  const problem = await passwordProblem(c.env, session.user, body.newPassword);
+  if (problem) return bad(problem, 400, { code: 'password_rule' });
+  const hash = await hashPassword(String(body.newPassword));
+  await c.env.DB.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?').bind(hash, session.user.id).run();
   await revokeAllSessions(c.env, session.user.id);
   await setSession(c, session.user, session.activeSchool);
-  await audit(c, 'change_password', 'user', session.user.id);
+  await audit(c, 'change_password', 'user', session.user.id, { after: { forced: !!session.user.must_change_password } });
   return c.json({ ok: true }); // c.json keeps the renewed session cookie
 });
+
+/** Password rules: at least 8 characters, and never the user's own IC / Passport No. */
+async function passwordProblem(env, user, password) {
+  const pw = String(password || '');
+  if (pw.length < 8) return 'Kata laluan baharu mestilah sekurang-kurangnya 8 aksara. / New password must be at least 8 characters.';
+  if (await isOwnIc(env, user, pw)) {
+    return 'Kata laluan baharu tidak boleh sama dengan No. IC / Pasport anda. / The new password cannot be your IC / Passport No.';
+  }
+  return null;
+}
 
 auth.post('/forgot', async (c) => {
   const body = await readJson(c);
@@ -192,9 +207,13 @@ auth.post('/reset', async (c) => {
   if (!row) return bad('Pautan tidak sah. / Invalid link.', 400);
   const data = JSON.parse(row.value);
   if (data.expires < Date.now()) return bad('Pautan telah tamat tempoh. / Link has expired.', 400);
-  if (String(body.password || '').length < 8) return bad('Kata laluan mestilah sekurang-kurangnya 8 aksara. / Password must be at least 8 characters.');
-  const hash = await hashPassword(body.password);
-  await c.env.DB.prepare('UPDATE users SET password_hash = ? WHERE id = ?').bind(hash, data.userId).run();
+  const target = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(data.userId).first();
+  if (!target) return bad('Pautan tidak sah. / Invalid link.', 400);
+  const problem = await passwordProblem(c.env, target, body.password);
+  if (problem) return bad(problem, 400, { code: 'password_rule' });
+  const hash = await hashPassword(String(body.password));
+  // A password chosen through the reset link also ends the first-login requirement.
+  await c.env.DB.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?').bind(hash, data.userId).run();
   await c.env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(`reset:${token}`).run();
   await revokeAllSessions(c.env, data.userId);
   return json({ ok: true });

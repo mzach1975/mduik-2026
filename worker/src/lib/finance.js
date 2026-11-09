@@ -117,6 +117,25 @@ export async function createInvoice(env, {
   return { invoice, created: true };
 }
 
+/** SQL for a student's latest approved adjusted monthly rate (NULL when none). `s` is the students alias. */
+export const ADJUSTED_RATE_SQL = `(SELECT fa.new_rate_cents FROM fee_adjustments fa
+  WHERE fa.student_id = s.id AND fa.school_id = s.school_id AND fa.status = 'approved'
+  ORDER BY fa.effective_date DESC, fa.created_at DESC LIMIT 1)`;
+
+/**
+ * The monthly rate used for new invoices: the student's approved adjusted rate
+ * if one exists, otherwise the school's default monthly fee at that moment.
+ * Issued invoices keep their own amount (BR-08).
+ */
+export function monthlyRate(adjustedRate, school) {
+  return adjustedRate === null || adjustedRate === undefined ? school.monthly_fee_cents : adjustedRate;
+}
+
+export async function studentMonthlyRate(env, studentId, school) {
+  const row = await env.DB.prepare(`SELECT ${ADJUSTED_RATE_SQL} AS rate FROM students s WHERE s.id = ?`).bind(studentId).first();
+  return monthlyRate(row?.rate, school);
+}
+
 /** Generate monthly invoices for one school. Idempotent per student/month. */
 export async function generateMonthlyInvoices(env, schoolId, month = monthOf(today()), actorName = 'system') {
   const school = await env.DB.prepare('SELECT * FROM schools WHERE id = ?').bind(schoolId).first();
@@ -124,14 +143,14 @@ export async function generateMonthlyInvoices(env, schoolId, month = monthOf(tod
   const [y, m] = month.split('-').map(Number);
   const dueDate = dueDateFor(y, m, school.monthly_due_day);
   const { results: students } = await env.DB.prepare(
-    `SELECT * FROM students WHERE school_id = ? AND status = 'active' AND monthly_tracking = 1
-     AND (tracking_start IS NULL OR tracking_start <= ?)`,
+    `SELECT s.*, ${ADJUSTED_RATE_SQL} AS adjusted_rate FROM students s WHERE s.school_id = ? AND s.status = 'active' AND s.monthly_tracking = 1
+     AND (s.tracking_start IS NULL OR s.tracking_start <= ?)`,
   )
     .bind(schoolId, month)
     .all();
   const created = [];
   for (const student of students) {
-    const amount = student.monthly_fee_cents || school.monthly_fee_cents;
+    const amount = monthlyRate(student.adjusted_rate, school);
     const { invoice, created: isNew } = await createInvoice(env, {
       schoolId,
       studentId: student.id,
@@ -169,10 +188,7 @@ export async function generateRegistrationInvoices(env, schoolId, year = yearOf(
     .all();
   const created = [];
   for (const student of students) {
-    const plan = student.fee_plan_id
-      ? await env.DB.prepare('SELECT * FROM fee_plans WHERE id = ?').bind(student.fee_plan_id).first()
-      : null;
-    const amount = plan?.registration_fee_cents ?? school.registration_fee_cents;
+    const amount = school.registration_fee_cents;
     const { invoice, created: isNew } = await createInvoice(env, {
       schoolId,
       studentId: student.id,
@@ -380,7 +396,7 @@ export async function studentBalance(env, studentId) {
 
 export async function agingReport(env, schoolId, asOf = today()) {
   const { results } = await env.DB.prepare(
-    `SELECT i.*, s.full_name AS student_name, s.class_name
+    `SELECT i.*, s.full_name AS student_name
      FROM invoices i JOIN students s ON s.id = i.student_id
      WHERE i.school_id = ? AND i.status IN ('unpaid','partial')
        AND (i.amount_cents - i.paid_cents - i.credited_cents - i.waived_cents) > 0

@@ -61,7 +61,7 @@ finance.get('/invoices', staff, async (c) => {
     .bind(...binds)
     .first();
   const { results } = await c.env.DB.prepare(
-    `SELECT i.*, s.full_name AS student_name, s.class_name FROM invoices i JOIN students s ON s.id = i.student_id
+    `SELECT i.*, s.full_name AS student_name FROM invoices i JOIN students s ON s.id = i.student_id
      WHERE ${w} ORDER BY i.issue_date DESC, i.number DESC LIMIT ? OFFSET ?`,
   )
     .bind(...binds, pageSize, offset)
@@ -72,7 +72,7 @@ finance.get('/invoices', staff, async (c) => {
 finance.get('/invoices/:id', staff, async (c) => {
   const auth = c.get('auth');
   const invoice = await c.env.DB.prepare(
-    'SELECT i.*, s.full_name AS student_name, s.class_name FROM invoices i JOIN students s ON s.id = i.student_id WHERE i.id = ? AND i.school_id = ?',
+    'SELECT i.*, s.full_name AS student_name FROM invoices i JOIN students s ON s.id = i.student_id WHERE i.id = ? AND i.school_id = ?',
   )
     .bind(c.req.param('id'), auth.activeSchool)
     .first();
@@ -557,7 +557,6 @@ const EXPORTS = {
     columns: [
       { label: 'Invoice', key: 'number' },
       { label: 'Student', key: 'student_name' },
-      { label: 'Class', key: 'class_name' },
       { label: 'Type', key: 'type' },
       { label: 'Period', key: 'period' },
       { label: 'Issue date', key: 'issue_date' },
@@ -617,7 +616,7 @@ finance.get('/exports/:type', staff, async (c) => {
   let rows;
   if (type === 'invoices') {
     rows = (await c.env.DB.prepare(
-      'SELECT i.*, s.full_name AS student_name, s.class_name FROM invoices i JOIN students s ON s.id = i.student_id WHERE i.school_id = ? ORDER BY i.issue_date DESC',
+      'SELECT i.*, s.full_name AS student_name FROM invoices i JOIN students s ON s.id = i.student_id WHERE i.school_id = ? ORDER BY i.issue_date DESC',
     ).bind(auth.activeSchool).all()).results;
   } else if (type === 'receipts') {
     rows = (await c.env.DB.prepare(

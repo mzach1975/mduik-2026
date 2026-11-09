@@ -13,10 +13,7 @@ const EMPTY = {
   ic: '',
   dob: '',
   gender: '',
-  className: '',
   address: '',
-  phone: '',
-  email: '',
   parentName: '',
   parentEmail: '',
   parentPhone: '',
@@ -73,7 +70,9 @@ export default function Apply() {
         const age = Math.floor((Date.now() - new Date(form.dob).getTime()) / (365.25 * 86400000));
         if (age < 4 || age > 25) next.dob = t('apply.ageError');
       }
-      if (!emailOk(form.email)) next.email = t('apply.emailError');
+      const ic = form.ic.toUpperCase().replace(/[\s-]+/g, '');
+      if (!ic) next.ic = t('common.requiredField');
+      else if (!/^[A-Z0-9]{5,20}$/.test(ic)) next.ic = t('apply.icError');
     }
     if (which === 1) {
       if (!form.parentName.trim()) next.parentName = t('common.requiredField');
@@ -253,14 +252,11 @@ export default function Apply() {
                       <option value="islamic_studies">{t('common.islamicStudies')}</option>
                     </Select>
                   </Field>
-                  <Field label={t('apply.classApplied')}>
-                    <Input value={form.className} onChange={(e) => set('className', e.target.value)} />
-                  </Field>
                   <Field label={t('apply.fullName')} required error={errors.studentName} className="formgrid__full">
                     <Input value={form.studentName} onChange={(e) => set('studentName', e.target.value)} autoComplete="name" />
                   </Field>
-                  <Field label={t('apply.ic')} hint={t('students.icHint')}>
-                    <Input value={form.ic} onChange={(e) => set('ic', e.target.value)} inputMode="numeric" />
+                  <Field label={t('apply.ic')} hint={t('students.icHint')} required error={errors.ic}>
+                    <Input value={form.ic} onChange={(e) => set('ic', e.target.value)} autoComplete="off" />
                   </Field>
                   <Field label={t('apply.dob')} required error={errors.dob}>
                     <Input type="date" value={form.dob} max={new Date().toISOString().slice(0, 10)} onChange={(e) => set('dob', e.target.value)} />
@@ -271,12 +267,6 @@ export default function Apply() {
                       <option value="male">{t('apply.male')}</option>
                       <option value="female">{t('apply.female')}</option>
                     </Select>
-                  </Field>
-                  <Field label={t('apply.phone')}>
-                    <Input value={form.phone} onChange={(e) => set('phone', e.target.value)} inputMode="tel" />
-                  </Field>
-                  <Field label={t('apply.email')} error={errors.email}>
-                    <Input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} />
                   </Field>
                   <Field label={t('apply.address')} className="formgrid__full">
                     <Textarea rows={2} value={form.address} onChange={(e) => set('address', e.target.value)} />

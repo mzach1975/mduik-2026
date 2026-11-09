@@ -34,7 +34,6 @@ export default function Students() {
   const debounced = useDebounced(search);
   const status = params.get('status') || '';
   const tracking = params.get('tracking') || '';
-  const klass = params.get('class') || '';
   const page = Number(params.get('page') || 1);
   const [addOpen, setAddOpen] = useState(false);
 
@@ -50,10 +49,8 @@ export default function Students() {
     }
   }, [debounced]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const query = useMemo(() => buildQuery({ q: debounced, status, tracking, class: klass, page, pageSize: 20 }), [debounced, status, tracking, klass, page]);
+  const query = useMemo(() => buildQuery({ q: debounced, status, tracking, page, pageSize: 20 }), [debounced, status, tracking, page]);
   const { data, loading, error, reload } = useApi(`/students${query}`);
-  const { data: classData } = useApi('/students/classes');
-  const classes = classData?.classes || [];
   const isAdmin = user?.isSuper || user?.role === 'school_admin';
 
   function update(key, value) {
@@ -82,7 +79,7 @@ export default function Students() {
 
       <Card padded={false}>
         <div className="toolbar">
-          <SearchBox value={search} onChange={setSearch} placeholder={`${t('common.search')} — ${t('students.name')}`} />
+          <SearchBox value={search} onChange={setSearch} placeholder={t('students.searchPlaceholder')} />
           <div className="toolbar__filters">
             <Select value={status} onChange={(e) => update('status', e.target.value)}>
               <option value="">{t('common.all')} · {t('common.status')}</option>
@@ -94,12 +91,6 @@ export default function Students() {
               <option value="">{t('common.all')} · {t('students.tracking')}</option>
               <option value="on">{t('students.trackingOn')}</option>
               <option value="off">{t('students.trackingOff')}</option>
-            </Select>
-            <Select value={klass} onChange={(e) => update('class', e.target.value)}>
-              <option value="">{t('common.allClasses')}</option>
-              {classes.map((c) => (
-                <option key={c.class_name} value={c.class_name}>{c.class_name} ({c.n})</option>
-              ))}
             </Select>
           </div>
         </div>
@@ -123,9 +114,17 @@ export default function Students() {
                     </span>
                   ),
                 },
-                { key: 'class_name', label: t('common.class'), render: (r) => r.class_name || '—' },
-                { key: 'fee_plan_name', label: t('students.feePlan'), render: (r) => r.fee_plan_name || '—' },
-                { key: 'monthly_fee_cents', label: t('students.monthlyFee'), align: 'right', render: (r) => money(r.monthly_fee_cents) },
+                {
+                  key: 'monthly_fee_cents',
+                  label: t('students.monthlyFee'),
+                  align: 'right',
+                  render: (r) => (
+                    <span className="stack-cell">
+                      <span>{money(r.monthly_fee_cents)}</span>
+                      {r.has_adjusted_rate ? <small>{t('students.adjustedRate')}</small> : null}
+                    </span>
+                  ),
+                },
                 {
                   key: 'monthly_tracking',
                   label: t('students.tracking'),
@@ -154,26 +153,31 @@ export default function Students() {
 
 function AddStudentModal({ open, onClose, onDone }) {
   const { t } = useI18n();
-  const { data: lookups } = useApi('/lookups', { enabled: open });
   const { push } = useToast();
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({
-    fullName: '', ic: '', dob: '', gender: '', className: '', phone: '', email: '', address: '',
-    feePlanId: '', monthlyFeeCents: '', monthlyTracking: false, parentName: '', parentEmail: '', parentPhone: '',
-  });
-  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-  const plan = lookups?.feePlans?.find((p) => p.id === form.feePlanId);
+  const empty = { fullName: '', ic: '', dob: '', gender: '', address: '', monthlyTracking: false };
+  const [form, setForm] = useState(empty);
+  const [icMatches, setIcMatches] = useState(null);
+  const set = (k, v) => {
+    if (k === 'ic') setIcMatches(null);
+    setForm((f) => ({ ...f, [k]: v }));
+  };
+
+  useEffect(() => {
+    if (open) {
+      setForm(empty);
+      setIcMatches(null);
+    }
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function submit() {
     setBusy(true);
     try {
-      const res = await api.post('/students', {
-        ...form,
-        monthlyFeeCents: form.monthlyFeeCents ? Math.round(Number(form.monthlyFeeCents) * 100) : plan?.monthly_fee_cents,
-      });
+      const res = await api.post('/students', { ...form, allowDuplicateIc: !!icMatches });
       onDone(res.id);
     } catch (err) {
-      push(err.message, 'danger');
+      if (err.data?.code === 'student_ic_exists') setIcMatches(err.data.matches || []);
+      else push(err.message, 'danger');
     } finally {
       setBusy(false);
     }
@@ -188,8 +192,8 @@ function AddStudentModal({ open, onClose, onDone }) {
       footer={
         <>
           <button type="button" className="btn btn--ghost" onClick={onClose}>{t('common.cancel')}</button>
-          <button type="button" className="btn btn--primary" onClick={submit} disabled={busy || !form.fullName}>
-            {busy && <span className="spinner spinner--light" />} {t('students.saveStudent')}
+          <button type="button" className="btn btn--primary" onClick={submit} disabled={busy || !form.fullName.trim() || !form.ic.trim()}>
+            {busy && <span className="spinner spinner--light" />} {icMatches ? t('students.saveAnyway') : t('students.saveStudent')}
           </button>
         </>
       }
@@ -199,7 +203,7 @@ function AddStudentModal({ open, onClose, onDone }) {
         <Field label={t('students.name')} required className="formgrid__full">
           <Input value={form.fullName} onChange={(e) => set('fullName', e.target.value)} />
         </Field>
-        <Field label={t('common.ic')} hint={t('students.icHint')}>
+        <Field label={t('common.ic')} required hint={t('students.icHint')}>
           <Input value={form.ic} onChange={(e) => set('ic', e.target.value)} />
         </Field>
         <Field label={t('students.dob')}>
@@ -212,52 +216,21 @@ function AddStudentModal({ open, onClose, onDone }) {
             <option value="female">{t('apply.female')}</option>
           </Select>
         </Field>
-        <Field label={t('common.class')}>
-          <Input value={form.className} onChange={(e) => set('className', e.target.value)} list="class-options" />
-          <datalist id="class-options">
-            {(lookups?.classes || []).map((c) => <option key={c} value={c} />)}
-          </datalist>
-        </Field>
-        <Field label={t('common.phone')}>
-          <Input value={form.phone} onChange={(e) => set('phone', e.target.value)} />
-        </Field>
-        <Field label={t('common.email')}>
-          <Input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} />
-        </Field>
         <Field label={t('students.address')} className="formgrid__full">
           <Textarea rows={2} value={form.address} onChange={(e) => set('address', e.target.value)} />
         </Field>
       </div>
-
-      <h4 className="detaillabel">{t('students.feePlan')}</h4>
-      <div className="formgrid">
-        <Field label={t('students.choosePlan')}>
-          <Select value={form.feePlanId} onChange={(e) => set('feePlanId', e.target.value)}>
-            <option value="">{t('common.select')}</option>
-            {(lookups?.feePlans || []).map((p) => (
-              <option key={p.id} value={p.id}>{p.name} — RM {(p.monthly_fee_cents / 100).toFixed(2)}</option>
-            ))}
-          </Select>
-        </Field>
-        <Field label={t('students.monthlyFee')}>
-          <Input type="number" min="0" step="0.01" value={form.monthlyFeeCents} placeholder={plan ? (plan.monthly_fee_cents / 100).toFixed(2) : ''} onChange={(e) => set('monthlyFeeCents', e.target.value)} />
-        </Field>
-      </div>
       <Checkbox checked={form.monthlyTracking} onChange={(e) => set('monthlyTracking', e.target.checked)} label={t('students.trackingHint')} />
-
-      <h4 className="detaillabel">{t('students.parentSection')}</h4>
-      <div className="formgrid">
-        <Field label={t('students.parentName')}>
-          <Input value={form.parentName} onChange={(e) => set('parentName', e.target.value)} />
-        </Field>
-        <Field label={t('students.parentEmail')}>
-          <Input type="email" value={form.parentEmail} onChange={(e) => set('parentEmail', e.target.value)} />
-        </Field>
-        <Field label={t('students.parentPhone')}>
-          <Input value={form.parentPhone} onChange={(e) => set('parentPhone', e.target.value)} />
-        </Field>
-      </div>
-      <Alert tone="info">{t('students.trackingHint')}</Alert>
+      <Alert tone="info">{t('students.feeFromSchool')}</Alert>
+      <Alert tone="info">{t('students.parentsLinkedLater')}</Alert>
+      {icMatches && (
+        <Alert tone="warning">
+          {t('students.icExists')}
+          <ul>
+            {icMatches.map((m) => <li key={m.id}>{m.full_name} — {m.school_name}</li>)}
+          </ul>
+        </Alert>
+      )}
     </Modal>
   );
 }

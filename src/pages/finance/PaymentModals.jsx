@@ -81,7 +81,7 @@ export function RecordPaymentModal({ open, onClose, onSaved, initialStudentId = 
         <Select value={studentId} onChange={(e) => setStudentId(e.target.value)}>
           <option value="">{t('common.selectStudent')}</option>
           {(lookups?.students || []).map((s) => (
-            <option key={s.id} value={s.id}>{s.full_name} — {s.class_name || '—'}</option>
+            <option key={s.id} value={s.id}>{s.full_name} — {s.ic_masked || '—'}</option>
           ))}
         </Select>
       </Field>

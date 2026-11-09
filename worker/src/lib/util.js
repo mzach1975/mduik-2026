@@ -70,15 +70,25 @@ export async function readJson(c) {
   }
 }
 
+/**
+ * IC / Passport No. normaliser shared by storing, hashing and matching:
+ * uppercase, with spaces and hyphens removed. Accepts IC, passport, birth
+ * certificate and MyKid numbers (no 12-digit rule).
+ */
 export function normalizeIc(value) {
-  return String(value || '').replace(/[^0-9]/g, '');
+  return String(value ?? '').toUpperCase().replace(/[\s-]+/g, '');
 }
 
+/** True when the normalised value looks like an identity number (5–20 letters/digits). */
+export function validIc(value) {
+  return /^[A-Z0-9]{5,20}$/.test(normalizeIc(value));
+}
+
+/** Masked display: only the last four characters, e.g. ********1234. */
 export function maskIc(value) {
-  const digits = normalizeIc(value);
-  if (!digits) return null;
-  if (digits.length < 4) return '****';
-  return `******-**-${digits.slice(-4)}`;
+  const v = normalizeIc(value);
+  if (!v) return null;
+  return `********${v.slice(-4)}`;
 }
 
 export function maskIcStored(masked, value) {

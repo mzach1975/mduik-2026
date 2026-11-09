@@ -27,7 +27,25 @@ jobs:
           cache: npm
 
       - run: npm ci
+      - run: npm test
       - run: npm run build
+
+      # Full D1 backup before the schema and runtime migrations run
+      # (CR 2026-11-09 drops columns and the fee_plans table). Kept 30 days.
+      - name: Back up D1
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: '4.156.1'
+          command: d1 export mduik-db --remote --output=./d1-backup.sql
+
+      - name: Store D1 backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: d1-backup-${{ github.sha }}
+          path: d1-backup.sql
+          retention-days: 30
 
       # schema.sql is idempotent (CREATE TABLE/INDEX IF NOT EXISTS) and safe
       # to apply on every deployment until versioned migrations are adopted.

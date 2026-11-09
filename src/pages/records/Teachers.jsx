@@ -4,10 +4,11 @@ import { useAuth } from '../../auth';
 import { useI18n } from '../../i18n';
 import { useApi } from '../../hooks';
 import Icon from '../../components/Icon';
+import ParentPicker, { emptyParent, parentReady, takeDuplicateError } from '../../components/ParentPicker';
 import {
+  Alert,
   Badge,
   Card,
-  Checkbox,
   DataTable,
   ErrorState,
   Field,
@@ -27,20 +28,6 @@ export default function Teachers() {
   const [modal, setModal] = useState(null);
   const [busy, setBusy] = useState(false);
   const isAdmin = user?.isSuper || user?.role === 'school_admin';
-
-  async function submit(path, payload, message) {
-    setBusy(true);
-    try {
-      await api.post(path, payload);
-      push(message);
-      setModal(null);
-      await reload(true);
-    } catch (err) {
-      push(err.message, 'danger');
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function update(id, payload) {
     setBusy(true);
@@ -97,7 +84,7 @@ export default function Teachers() {
                 render: (r) =>
                   r.user_id ? (
                     <Badge tone={r.user_status === 'active' ? 'green' : 'slate'} dot>
-                      {r.login_email || t('teachers.createLogin')}
+                      {r.login_email || '—'}
                     </Badge>
                   ) : (
                     <span className="muted">{t('teachers.noLogin')}</span>
@@ -122,10 +109,13 @@ export default function Teachers() {
       </Card>
 
       {modal?.type === 'add' && (
-        <TeacherModal
+        <AddTeacherModal
           onClose={() => setModal(null)}
-          busy={busy}
-          onSubmit={(payload) => submit('/teachers', payload, t('teachers.created'))}
+          onDone={async (res) => {
+            push(res?.linked ? t('teachers.addedToSchool') : t('teachers.created'));
+            setModal(null);
+            await reload(true);
+          }}
         />
       )}
       {modal?.type === 'edit' && (
@@ -140,16 +130,63 @@ export default function Teachers() {
   );
 }
 
+/** Add teacher: search by IC / Passport No. first; a login is always created (first password is the IC). */
+function AddTeacherModal({ onClose, onDone }) {
+  const { t } = useI18n();
+  const { push } = useToast();
+  const [person, setPerson] = useState(emptyParent);
+  const [busy, setBusy] = useState(false);
+  const memberHere = person.match?.memberHere;
+
+  async function submit() {
+    setBusy(true);
+    try {
+      const res = await api.post('/teachers', {
+        teacherId: person.parentId || undefined,
+        ic: person.ic,
+        fullName: person.name,
+        email: person.email,
+        phone: person.phone,
+        createAnyway: person.createAnyway || undefined,
+        duplicateReason: person.createAnyway ? person.duplicateReason : undefined,
+      });
+      await onDone(res);
+    } catch (err) {
+      if (!takeDuplicateError(err, setPerson)) push(err.message, 'danger');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={t('teachers.addTitle')}
+      subtitle={t('teachers.addHint')}
+      size="lg"
+      footer={
+        <>
+          <button type="button" className="btn btn--ghost" onClick={onClose}>{t('common.cancel')}</button>
+          <button type="button" className="btn btn--primary" disabled={busy || memberHere || !parentReady(person)} onClick={submit}>
+            {busy && <span className="spinner spinner--light" />} {person.parentId ? t('teachers.addToSchool') : t('common.save')}
+          </button>
+        </>
+      }
+    >
+      <ParentPicker kind="teacher" value={person} onChange={setPerson} />
+      <Alert tone="info">{t('teachers.loginNote')}</Alert>
+    </Modal>
+  );
+}
+
 function TeacherModal({ teacher, onClose, onSubmit, busy }) {
   const { t } = useI18n();
-  const editing = !!teacher;
   const [form, setForm] = useState({
-    fullName: teacher?.full_name || '',
-    email: teacher?.email || '',
-    phone: teacher?.phone || '',
-    status: teacher?.status || 'active',
-    createLogin: !teacher,
-    password: '',
+    fullName: teacher.full_name || '',
+    email: teacher.email || '',
+    phone: teacher.phone || '',
+    status: teacher.status || 'active',
   });
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -157,21 +194,15 @@ function TeacherModal({ teacher, onClose, onSubmit, busy }) {
     <Modal
       open
       onClose={onClose}
-      title={editing ? t('common.edit') : t('teachers.addTitle')}
+      title={t('common.edit')}
       footer={
         <>
           <button type="button" className="btn btn--ghost" onClick={onClose}>{t('common.cancel')}</button>
           <button
             type="button"
             className="btn btn--primary"
-            disabled={busy || !form.fullName}
-            onClick={() =>
-              onSubmit(
-                editing
-                  ? { full_name: form.fullName, email: form.email, phone: form.phone, status: form.status }
-                  : { fullName: form.fullName, email: form.email, phone: form.phone, createLogin: form.createLogin, password: form.password || undefined },
-              )
-            }
+            disabled={busy || !form.fullName.trim() || !form.email.trim() || !form.phone.trim()}
+            onClick={() => onSubmit({ full_name: form.fullName, email: form.email, phone: form.phone, status: form.status })}
           >
             {busy && <span className="spinner spinner--light" />} {t('common.save')}
           </button>
@@ -182,31 +213,22 @@ function TeacherModal({ teacher, onClose, onSubmit, busy }) {
         <Field label={t('teachers.name')} required className="formgrid__full">
           <Input value={form.fullName} onChange={(e) => set('fullName', e.target.value)} />
         </Field>
-        <Field label={t('teachers.email')}>
+        <Field label={t('common.ic')}>
+          <Input value={teacher.ic_masked || '—'} disabled />
+        </Field>
+        <Field label={t('teachers.email')} required>
           <Input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} />
         </Field>
-        <Field label={t('teachers.phone')}>
+        <Field label={t('teachers.phone')} required>
           <Input value={form.phone} onChange={(e) => set('phone', e.target.value)} />
         </Field>
-        {editing && (
-          <Field label={t('common.status')}>
-            <Select value={form.status} onChange={(e) => set('status', e.target.value)}>
-              <option value="active">{t('common.active')}</option>
-              <option value="inactive">{t('common.inactive')}</option>
-            </Select>
-          </Field>
-        )}
+        <Field label={t('common.status')}>
+          <Select value={form.status} onChange={(e) => set('status', e.target.value)}>
+            <option value="active">{t('common.active')}</option>
+            <option value="inactive">{t('common.inactive')}</option>
+          </Select>
+        </Field>
       </div>
-      {!editing && (
-        <>
-          <Checkbox checked={form.createLogin} onChange={(e) => set('createLogin', e.target.checked)} label={t('teachers.createLogin')} />
-          {form.createLogin && (
-            <Field label={t('auth.password')} hint={`${t('teachers.passwordHint')} — ${t('auth.newPasswordHint')}`}>
-              <Input type="text" value={form.password} onChange={(e) => set('password', e.target.value)} placeholder="Mduik@2026" />
-            </Field>
-          )}
-        </>
-      )}
     </Modal>
   );
 }

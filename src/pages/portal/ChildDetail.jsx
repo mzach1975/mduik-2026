@@ -38,7 +38,7 @@ export default function ChildDetail() {
         }
         eyebrow={student.school_name}
         title={student.full_name}
-        subtitle={`${student.class_name || '—'} · ${t('students.registeredOn')} ${date(student.created_at)}`}
+        subtitle={`${t('students.registeredOn')} ${date(student.created_at)}`}
         actions={<StatusBadge status={student.status} />}
       />
 

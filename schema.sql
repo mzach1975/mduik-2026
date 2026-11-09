@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS schools (
   reg_gen_day INTEGER NOT NULL DEFAULT 1,
   reg_due_month INTEGER NOT NULL DEFAULT 1,
   reg_due_day INTEGER NOT NULL DEFAULT 31,
+  -- School-level fees in sen (default_monthly_fee / registration_fee_amount).
   monthly_fee_cents INTEGER NOT NULL DEFAULT 15000,
   registration_fee_cents INTEGER NOT NULL DEFAULT 20000,
   bank_name TEXT,
@@ -32,17 +33,6 @@ CREATE TABLE IF NOT EXISTS schools (
 );
 CREATE INDEX IF NOT EXISTS idx_schools_status ON schools(status);
 
-CREATE TABLE IF NOT EXISTS fee_plans (
-  id TEXT PRIMARY KEY,
-  school_id TEXT NOT NULL REFERENCES schools(id),
-  name TEXT NOT NULL,
-  monthly_fee_cents INTEGER NOT NULL,
-  registration_fee_cents INTEGER NOT NULL,
-  active INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_fee_plans_school ON fee_plans(school_id);
-
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
@@ -52,6 +42,7 @@ CREATE TABLE IF NOT EXISTS users (
   ic_masked TEXT,
   phone TEXT,
   password_hash TEXT NOT NULL,
+  must_change_password INTEGER NOT NULL DEFAULT 0,
   language TEXT NOT NULL DEFAULT 'bm',
   status TEXT NOT NULL DEFAULT 'active',
   parent_id TEXT,
@@ -89,11 +80,7 @@ CREATE TABLE IF NOT EXISTS students (
   ic_masked TEXT,
   dob TEXT,
   gender TEXT,
-  class_name TEXT,
   address TEXT,
-  phone TEXT,
-  email TEXT,
-  fee_plan_id TEXT REFERENCES fee_plans(id),
   monthly_fee_cents INTEGER NOT NULL DEFAULT 0,
   monthly_tracking INTEGER NOT NULL DEFAULT 0,
   tracking_start TEXT,
@@ -138,6 +125,8 @@ CREATE TABLE IF NOT EXISTS parent_students (
 );
 CREATE INDEX IF NOT EXISTS idx_parent_students_student ON parent_students(student_id);
 
+-- One record per teacher across schools; school_id is the school that added
+-- the teacher first, and teacher_schools holds each school membership.
 CREATE TABLE IF NOT EXISTS teachers (
   id TEXT PRIMARY KEY,
   school_id TEXT NOT NULL REFERENCES schools(id),
@@ -145,11 +134,25 @@ CREATE TABLE IF NOT EXISTS teachers (
   full_name TEXT NOT NULL,
   email TEXT,
   phone TEXT,
+  phone_norm TEXT,
+  ic_hash TEXT,
+  ic_enc TEXT,
   ic_masked TEXT,
+  duplicate_reason TEXT,
   status TEXT NOT NULL DEFAULT 'active',
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_teachers_school ON teachers(school_id);
+
+CREATE TABLE IF NOT EXISTS teacher_schools (
+  id TEXT PRIMARY KEY,
+  teacher_id TEXT NOT NULL REFERENCES teachers(id),
+  school_id TEXT NOT NULL REFERENCES schools(id),
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  UNIQUE (teacher_id, school_id)
+);
+CREATE INDEX IF NOT EXISTS idx_teacher_schools_school ON teacher_schools(school_id, status);
 
 CREATE TABLE IF NOT EXISTS applications (
   id TEXT PRIMARY KEY,
@@ -163,8 +166,6 @@ CREATE TABLE IF NOT EXISTS applications (
   dob TEXT,
   gender TEXT,
   address TEXT,
-  phone TEXT,
-  email TEXT,
   education TEXT,
   reason TEXT,
   parent_name TEXT,
@@ -496,3 +497,14 @@ CREATE TABLE IF NOT EXISTS session_revocations (
 );
 CREATE INDEX IF NOT EXISTS idx_session_revocations_user ON session_revocations(user_id);
 CREATE INDEX IF NOT EXISTS idx_session_revocations_jti ON session_revocations(jti);
+
+-- Copies of data removed by runtime migrations (worker/src/lib/migrate.js),
+-- kept so a dropped column or table can be restored.
+CREATE TABLE IF NOT EXISTS migration_backups (
+  id TEXT PRIMARY KEY,
+  migration TEXT NOT NULL,
+  table_name TEXT NOT NULL,
+  row_id TEXT,
+  data_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);

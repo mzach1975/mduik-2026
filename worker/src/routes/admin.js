@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { authMiddleware, requireRoles, encryptIc, decryptIc } from '../lib/auth.js';
+import { authMiddleware, requireRoles, encryptIc, decryptIc, hashIc } from '../lib/auth.js';
 import {
   id,
   nowIso,
@@ -16,9 +16,12 @@ import {
   yearOf,
   monthOf,
   normalizeIc,
+  validIc,
 } from '../lib/util.js';
 import { audit } from '../lib/audit.js';
-import { planParent, commitParent, linkParentToStudent, findParentByIc, findContactMatches, normalizePhone } from '../lib/parents.js';
+import { planParent, commitParent, linkParentToStudent, ensureParentLogin } from '../lib/parents.js';
+import { findContactMatches, checkNewPerson, message, ensureLogin } from '../lib/people.js';
+import { planTeacher, commitTeacher, addMembership } from '../lib/teachers.js';
 import { flagRetentionRecords, runDaily, createInvoice, dueDateFor } from '../lib/finance.js';
 import { notify } from '../lib/notify.js';
 
@@ -258,11 +261,11 @@ admin.post('/retention/:id/approve', requireRoles('school_admin'), async (c) => 
   const action = body.action === 'delete' ? 'delete' : 'anonymise';
   if (rec.entity === 'application') {
     if (action === 'delete') {
-      await c.env.DB.prepare("UPDATE applications SET student_name = '[dipadam]', ic_masked = NULL, ic_hash = NULL, ic_enc = NULL, dob = NULL, address = NULL, phone = NULL, email = NULL, education = NULL, reason = '[dipadam]', parent_name = '[dipadam]', parent_email = NULL, parent_phone = NULL, documents = '[]' WHERE id = ?")
+      await c.env.DB.prepare("UPDATE applications SET student_name = '[dipadam]', ic_masked = NULL, ic_hash = NULL, ic_enc = NULL, dob = NULL, address = NULL, education = NULL, reason = '[dipadam]', parent_name = '[dipadam]', parent_email = NULL, parent_phone = NULL, documents = '[]' WHERE id = ?")
         .bind(rec.entity_id)
         .run();
     } else {
-      await c.env.DB.prepare("UPDATE applications SET student_name = 'Pemohon ' || substr(reference, -5), parent_name = '[tanpa nama]', address = NULL, phone = NULL, email = NULL, parent_email = NULL, parent_phone = NULL WHERE id = ?")
+      await c.env.DB.prepare("UPDATE applications SET student_name = 'Pemohon ' || substr(reference, -5), parent_name = '[tanpa nama]', address = NULL, parent_email = NULL, parent_phone = NULL WHERE id = ?")
         .bind(rec.entity_id)
         .run();
     }
@@ -287,10 +290,12 @@ admin.post('/retention/:id/dismiss', requireRoles('school_admin'), async (c) => 
 });
 
 /* ------------------------------ Imports ------------------------------ */
+// No class, fee plan, student phone or student email columns. IC / Passport No.
+// is mandatory for students, parents and teachers.
 const TEMPLATES = {
-  students: ['full_name', 'ic', 'dob', 'gender', 'class_name', 'phone', 'email', 'address', 'parent_name', 'parent_ic', 'parent_email', 'parent_phone', 'monthly_fee', 'status'],
-  parents: ['full_name', 'ic', 'email', 'phone', 'address', 'student_name'],
-  teachers: ['full_name', 'email', 'phone', 'ic'],
+  students: ['full_name', 'ic', 'dob', 'gender', 'address', 'parent_name', 'parent_ic', 'parent_email', 'parent_phone', 'status'],
+  parents: ['full_name', 'ic', 'email', 'phone', 'address', 'student_ic'],
+  teachers: ['full_name', 'ic', 'email', 'phone'],
   'opening-balances': ['student_name', 'student_ic', 'amount', 'due_date', 'description'],
 };
 
@@ -302,88 +307,114 @@ admin.get('/imports/templates/:type', (c) => {
   });
 });
 
-function normaliseRow(type, row) {
+function normaliseRow(row) {
   const out = {};
   for (const [k, v] of Object.entries(row)) out[k.toLowerCase().trim().replace(/\s+/g, '_')] = typeof v === 'string' ? v.trim() : v;
   return out;
 }
 
 const STUDENT_PARENT = { ic: 'parent_ic', name: 'parent_name', email: 'parent_email', phone: 'parent_phone' };
-const PARENT_ROW = { ic: 'ic', name: 'full_name', email: 'email', phone: 'phone' };
+const PERSON_ROW = { ic: 'ic', name: 'full_name', email: 'email', phone: 'phone' };
 
-/**
- * Same parent checks as the forms: an IC match will link the existing parent,
- * and an email/phone match is reported so the admin chooses link or create.
- * The raw IC is replaced by its ciphertext before the report is stored.
- */
-async function checkImportParent(env, r, f, errors) {
-  const out = { warnings: [], duplicates: [], parentMatch: null };
-  const raw = r[f.ic];
-  if (raw) {
-    delete r[f.ic];
-    if (normalizeIc(raw).length < 6) {
-      errors.push('IC ibu bapa tidak sah / invalid parent IC');
-      return out;
-    }
-    const ic = await encryptIc(env, raw);
-    r[`${f.ic}_enc`] = ic.enc;
-    r[`${f.ic}_masked`] = ic.masked;
-    const match = await findParentByIc(env, raw);
-    if (match) {
-      out.parentMatch = { id: match.id, full_name: match.full_name };
-      return out;
-    }
+/** Replace a raw IC in the row with its ciphertext and masked form, so the stored report holds no plain IC. */
+async function sealIc(env, r, field) {
+  const raw = r[field];
+  delete r[field];
+  if (!raw) return '';
+  const ic = await encryptIc(env, raw);
+  r[`${field}_enc`] = ic.enc;
+  r[`${field}_masked`] = ic.masked;
+  return raw;
+}
+
+async function openIc(env, r, field) {
+  return r[`${field}_enc`] ? decryptIc(env, r[`${field}_enc`]) : null;
+}
+
+/** Existing parents/teachers with the same IC / Passport No., email or phone. */
+async function personDuplicates(env, kind, raw, r, f) {
+  const out = [];
+  let icHash = '';
+  if (validIc(raw)) {
+    icHash = await hashIc(env, raw);
+    const table = kind === 'teacher' ? 'teachers' : 'parents';
+    const m = await env.DB.prepare(`SELECT id, full_name FROM ${table} WHERE ic_hash = ?`).bind(icHash).first();
+    if (m) out.push({ kind, id: m.id, full_name: m.full_name, matchedOn: ['ic'] });
   }
-  const dups = await findContactMatches(env, { email: r[f.email], phone: r[f.phone] });
-  if (dups.length) {
-    out.warnings.push('E-mel/telefon ibu bapa sudah wujud / parent email or phone already exists');
-    out.duplicates = dups.map((d) => ({ id: d.id, full_name: d.full_name, matchedOn: d.matchedOn }));
-  }
+  const contacts = await findContactMatches(env, { email: r[f.email], phone: r[f.phone], excludeIcHash: icHash });
+  for (const d of contacts) out.push({ kind: d.kind, id: d.id, full_name: d.full_name, matchedOn: d.matchedOn });
   return out;
 }
 
+async function findSchoolStudent(env, schoolId, { ic, name }) {
+  if (validIc(ic)) {
+    const st = await env.DB.prepare('SELECT * FROM students WHERE school_id = ? AND ic_hash = ?').bind(schoolId, await hashIc(env, ic)).first();
+    if (st) return st;
+  }
+  if (name) {
+    return env.DB.prepare('SELECT * FROM students WHERE school_id = ? AND lower(full_name) = lower(?)').bind(schoolId, name).first();
+  }
+  return null;
+}
+
+/**
+ * Dry run. Rows whose IC / Passport No., email or phone already exists are
+ * flagged as possible duplicates; on confirm the admin chooses "use existing"
+ * or "create anyway", so no row is created silently.
+ */
 async function validateImport(env, schoolId, type, rows) {
   const results = [];
   const seenEmail = new Set();
+  const seenIc = new Set();
   for (let i = 0; i < rows.length; i++) {
-    const r = normaliseRow(type, rows[i]);
+    const r = normaliseRow(rows[i]);
     const errors = [];
-    let parentCheck = null;
+    let duplicates = [];
     if (type === 'students') {
       if (!r.full_name) errors.push('Nama diperlukan / name required');
-      if (r.ic) {
-        const { hashIc } = await import('../lib/auth.js');
-        const h = await hashIc(env, r.ic);
-        const dup = await env.DB.prepare('SELECT id FROM students WHERE school_id = ? AND ic_hash = ?').bind(schoolId, h).first();
-        if (dup) errors.push('IC sudah wujud / duplicate IC');
+      const raw = await sealIc(env, r, 'ic');
+      if (!raw) errors.push('No. IC / Pasport diperlukan / IC / Passport No. required');
+      else if (!validIc(raw)) errors.push('No. IC / Pasport tidak sah / invalid IC / Passport No.');
+      else {
+        const key = normalizeIc(raw);
+        if (seenIc.has(key)) errors.push('No. IC / Pasport berulang dalam fail / duplicate IC / Passport No. in file');
+        seenIc.add(key);
+        const st = await env.DB.prepare('SELECT id, full_name FROM students WHERE school_id = ? AND ic_hash = ?')
+          .bind(schoolId, await hashIc(env, raw))
+          .first();
+        if (st) duplicates.push({ kind: 'student', id: st.id, full_name: st.full_name, matchedOn: ['ic'] });
       }
-      if (r.parent_email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r.parent_email)) errors.push('E-mel ibu bapa tidak sah / invalid parent email');
-      if (r.parent_name || r.parent_ic) parentCheck = await checkImportParent(env, r, STUDENT_PARENT, errors);
-      if (r.monthly_fee && Number.isNaN(Number(String(r.monthly_fee).replace(/[^0-9.]/g, '')))) errors.push('Yuran tidak sah / invalid fee');
-    } else if (type === 'parents') {
-      if (!r.full_name) errors.push('Nama diperlukan / name required');
-      if (!r.email && !r.phone) errors.push('E-mel atau telefon diperlukan / email or phone required');
-      if (r.email && seenEmail.has(r.email.toLowerCase())) errors.push('E-mel berulang dalam fail / duplicate email in file');
-      if (r.email) seenEmail.add(r.email.toLowerCase());
-      parentCheck = await checkImportParent(env, r, PARENT_ROW, errors);
-    } else if (type === 'teachers') {
-      if (!r.full_name) errors.push('Nama diperlukan / name required');
-      if (!r.email) errors.push('E-mel diperlukan / email required');
-      if (r.email) {
-        const dup = await env.DB.prepare('SELECT id FROM users WHERE lower(email) = lower(?)').bind(r.email).first();
-        if (dup) errors.push('E-mel sudah digunakan / email already used');
+      if (r.parent_name || r.parent_ic || r.parent_email || r.parent_phone) {
+        const praw = await sealIc(env, r, 'parent_ic');
+        const problem = checkNewPerson({ name: r.parent_name, ic: praw, email: r.parent_email, phone: r.parent_phone });
+        if (problem) errors.push(`Ibu bapa / Parent: ${message(problem)}`);
+        else duplicates.push(...(await personDuplicates(env, 'parent', praw, r, STUDENT_PARENT)));
+      }
+    } else if (type === 'parents' || type === 'teachers') {
+      const kind = type === 'parents' ? 'parent' : 'teacher';
+      const raw = await sealIc(env, r, 'ic');
+      const problem = checkNewPerson({ name: r.full_name, ic: raw, email: r.email, phone: r.phone });
+      if (problem) errors.push(message(problem));
+      const email = String(r.email || '').toLowerCase();
+      if (email && seenEmail.has(email)) errors.push('E-mel berulang dalam fail / duplicate email in file');
+      if (email) seenEmail.add(email);
+      if (!problem) duplicates = await personDuplicates(env, kind, raw, r, PERSON_ROW);
+      if (kind === 'parent' && (r.student_ic || r.student_name)) {
+        const sraw = await sealIc(env, r, 'student_ic');
+        const st = await findSchoolStudent(env, schoolId, { ic: sraw, name: r.student_name });
+        if (!st) errors.push('Pelajar tidak dijumpai / student not found');
+        else r.student_id = st.id;
       }
     } else if (type === 'opening-balances') {
-      if (!r.student_name && !r.student_ic) errors.push('Nama atau IC pelajar diperlukan / student name or IC required');
+      const sraw = await sealIc(env, r, 'student_ic');
+      if (!r.student_name && !sraw) errors.push('Nama atau No. IC / Pasport pelajar diperlukan / student name or IC / Passport No. required');
       if (!r.amount || parseMoney(r.amount) <= 0) errors.push('Jumlah baki tidak sah / invalid balance amount');
-      if (r.student_name) {
-        const st = await env.DB.prepare('SELECT id FROM students WHERE school_id = ? AND lower(full_name) = lower(?)')
-          .bind(schoolId, r.student_name)
-          .first();
+      if (r.student_name || sraw) {
+        const st = await findSchoolStudent(env, schoolId, { ic: sraw, name: r.student_name });
         if (!st) errors.push('Pelajar tidak dijumpai / student not found');
       }
     }
-    results.push({ row: i + 2, data: r, errors, ...(parentCheck || {}) });
+    results.push({ row: i + 2, data: r, errors, duplicates });
   }
   return results;
 }
@@ -395,7 +426,8 @@ admin.get('/imports', requireRoles('school_admin'), async (c) => {
   )
     .bind(auth.activeSchool)
     .all();
-  return json({ batches: results });
+  // report_json holds encrypted IC values for the confirm step; it never leaves the server.
+  return json({ batches: results.map(({ report_json: _r, ...b }) => b) });
 });
 
 admin.post('/imports', requireRoles('school_admin'), async (c) => {
@@ -434,7 +466,7 @@ admin.post('/imports', requireRoles('school_admin'), async (c) => {
     failed: failed.length,
     duplicates: ok.filter((v) => v.duplicates?.length).length,
     rows: validation,
-    header: rows.length ? Object.keys(normaliseRow(type, rows[0])) : TEMPLATES[type],
+    header: rows.length ? Object.keys(normaliseRow(rows[0])) : TEMPLATES[type],
   };
   let docId = null;
   if (rawText) {
@@ -451,8 +483,16 @@ admin.post('/imports', requireRoles('school_admin'), async (c) => {
   )
     .bind(batchId, auth.activeSchool, type, filename, 'dry_run', rows.length, ok.length, failed.length, JSON.stringify(report), auth.user.id, nowIso())
     .run();
-  await audit(c, 'dry_run', 'import', batchId, { after: { type, total: rows.length, ok: ok.length, failed: failed.length } });
-  return json({ batch: { id: batchId, type, filename, total: rows.length, ok: ok.length, failed: failed.length, duplicates: report.duplicates }, report }, 201);
+  await audit(c, 'dry_run', 'import', batchId, { after: { type, total: rows.length, ok: ok.length, failed: failed.length, duplicates: report.duplicates } });
+  // The stored report keeps ciphertext for the confirm step; the client only sees masked values.
+  const clientReport = {
+    ...report,
+    rows: report.rows.map((row) => ({
+      ...row,
+      data: Object.fromEntries(Object.entries(row.data).filter(([k]) => !k.endsWith('_enc'))),
+    })),
+  };
+  return json({ batch: { id: batchId, type, filename, total: rows.length, ok: ok.length, failed: failed.length, duplicates: report.duplicates }, report: clientReport }, 201);
 });
 
 admin.post('/imports/:id/confirm', requireRoles('school_admin'), async (c) => {
@@ -470,7 +510,7 @@ admin.post('/imports/:id/confirm', requireRoles('school_admin'), async (c) => {
   const duplicateReason = String(body.duplicateReason || '').trim();
   if (dupRows && !duplicateAction) {
     return bad(
-      `${dupRows} baris mempunyai e-mel/telefon ibu bapa yang sudah wujud. Pilih pautkan atau cipta juga. / ${dupRows} rows have a parent email or phone that already exists. Choose link or create anyway.`,
+      `${dupRows} baris mungkin pendua (No. IC / Pasport, e-mel atau telefon sudah wujud). Pilih guna sedia ada atau cipta juga. / ${dupRows} rows are possible duplicates (IC / Passport No., email or phone already exists). Choose use existing or create anyway.`,
       409,
       { code: 'duplicate_contact', rows: dupRows },
     );
@@ -478,156 +518,131 @@ admin.post('/imports/:id/confirm', requireRoles('school_admin'), async (c) => {
   if (duplicateAction === 'create' && duplicateReason.length < 5) {
     return bad('Sebab diperlukan untuk cipta juga. / A reason is required to create anyway.', 400, { code: 'reason_required' });
   }
-  const importParent = makeParentImporter(c, auth.activeSchool, batch.id, duplicateAction, duplicateReason);
+  const people = makePeopleImporter(c, auth.activeSchool, batch.id, duplicateAction, duplicateReason);
+  const env = c.env;
   let inserted = 0;
+  let linked = 0;
   let parentSkipped = 0;
-  const plan = await c.env.DB.prepare('SELECT * FROM fee_plans WHERE school_id = ? AND active = 1 ORDER BY created_at LIMIT 1')
-    .bind(auth.activeSchool)
-    .first();
   for (const item of valid) {
     const r = item.data;
     if (batch.type === 'students') {
-      const existing = r.ic
-        ? await c.env.DB.prepare('SELECT id FROM students WHERE school_id = ? AND ic_hash IS NOT NULL AND full_name = ?')
-            .bind(auth.activeSchool, r.full_name)
-            .first()
-        : null;
-      if (existing) continue;
-      const studentId = id('std');
-      const fee = r.monthly_fee ? parseMoney(r.monthly_fee) : plan?.monthly_fee_cents || auth.school.monthly_fee_cents;
-      const { encryptIc } = await import('../lib/auth.js');
-      const ic = r.ic ? await encryptIc(c.env, r.ic) : { enc: null, hash: null, masked: null };
-      await c.env.DB.prepare(
-        `INSERT INTO students (id, school_id, full_name, ic_hash, ic_enc, ic_masked, dob, gender, class_name, address, phone, email,
-          fee_plan_id, monthly_fee_cents, monthly_tracking, status, import_batch_id, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)`,
-      )
-        .bind(
-          studentId,
-          auth.activeSchool,
-          r.full_name,
-          ic.hash,
-          ic.enc,
-          ic.masked,
-          r.dob || null,
-          r.gender || null,
-          r.class_name || '',
-          r.address || '',
-          r.phone || '',
-          r.email || '',
-          plan?.id || null,
-          fee,
-          r.status || 'active',
-          batch.id,
-          nowIso(),
+      const ic = await encryptIc(env, await openIc(env, r, 'ic'));
+      const existing = await env.DB.prepare('SELECT id FROM students WHERE school_id = ? AND ic_hash = ?').bind(auth.activeSchool, ic.hash).first();
+      let studentId;
+      if (existing && duplicateAction !== 'create') {
+        studentId = existing.id;
+        linked++;
+      } else {
+        studentId = id('std');
+        await env.DB.prepare(
+          `INSERT INTO students (id, school_id, full_name, ic_hash, ic_enc, ic_masked, dob, gender, address,
+            monthly_fee_cents, monthly_tracking, status, import_batch_id, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,0,0,?,?,?)`,
         )
-        .run();
-      if (r.parent_name || r.parent_ic_enc) {
-        const parent = await importParent(r, STUDENT_PARENT, studentId);
-        if (!parent) parentSkipped++;
+          .bind(
+            studentId,
+            auth.activeSchool,
+            r.full_name,
+            ic.hash,
+            ic.enc,
+            ic.masked,
+            r.dob || null,
+            r.gender || null,
+            r.address || '',
+            ['active', 'withdrawn', 'graduated', 'applicant'].includes(r.status) ? r.status : 'active',
+            batch.id,
+            nowIso(),
+          )
+          .run();
+        inserted++;
       }
-      inserted++;
+      if (r.parent_ic_enc && !(await people.parent(r, STUDENT_PARENT, studentId))) parentSkipped++;
     } else if (batch.type === 'parents') {
-      const st = r.student_name
-        ? await c.env.DB.prepare('SELECT id FROM students WHERE school_id = ? AND lower(full_name) = lower(?)')
-            .bind(auth.activeSchool, r.student_name)
-            .first()
-        : null;
-      const parent = await importParent(r, PARENT_ROW, st?.id || null);
-      if (!parent) {
-        parentSkipped++;
-        continue;
-      }
-      inserted++;
+      const parent = await people.parent(r, PERSON_ROW, r.student_id || null);
+      if (!parent) parentSkipped++;
+      else if (parent.created) inserted++;
+      else linked++;
     } else if (batch.type === 'teachers') {
-      const teacherId = id('tch');
-      await c.env.DB.prepare(
-        'INSERT INTO teachers (id, school_id, full_name, email, phone, status, created_at) VALUES (?,?,?,?,?,?,?)',
-      )
-        .bind(teacherId, auth.activeSchool, r.full_name, r.email || '', r.phone || '', 'active', nowIso())
-        .run();
-      inserted++;
+      const teacher = await people.teacher(r);
+      if (!teacher) parentSkipped++;
+      else if (teacher.created) inserted++;
+      else linked++;
     } else if (batch.type === 'opening-balances') {
-      let st = null;
-      if (r.student_ic) {
-        const { hashIc } = await import('../lib/auth.js');
-        const h = await hashIc(c.env, r.student_ic);
-        st = await c.env.DB.prepare('SELECT * FROM students WHERE school_id = ? AND ic_hash = ?').bind(auth.activeSchool, h).first();
-      }
-      if (!st && r.student_name) {
-        st = await c.env.DB.prepare('SELECT * FROM students WHERE school_id = ? AND lower(full_name) = lower(?)')
-          .bind(auth.activeSchool, r.student_name)
-          .first();
-      }
+      const st = await findSchoolStudent(env, auth.activeSchool, { ic: await openIc(env, r, 'student_ic'), name: r.student_name });
       if (!st) continue;
-      const amount = parseMoney(r.amount);
-      const due = r.due_date || today();
-      await createInvoice(c.env, {
+      await createInvoice(env, {
         schoolId: auth.activeSchool,
         studentId: st.id,
         type: 'opening',
         period: `OPEN-${batch.id.slice(-8)}`,
         issueDate: today(),
-        dueDate: due,
-        amountCents: amount,
+        dueDate: r.due_date || today(),
+        amountCents: parseMoney(r.amount),
         description: r.description || 'Baki permulaan / Opening balance',
       });
       inserted++;
     }
   }
-  await c.env.DB.prepare("UPDATE import_batches SET status = 'confirmed', report_json = ? WHERE id = ?")
-    .bind(JSON.stringify({ ...report, imported: inserted, parentSkipped, duplicateAction, duplicateReason: duplicateReason || null }), batch.id)
+  const summary = { imported: inserted, linked, parentSkipped, duplicateAction, duplicateReason: duplicateReason || null };
+  await env.DB.prepare("UPDATE import_batches SET status = 'confirmed', report_json = ? WHERE id = ?")
+    .bind(JSON.stringify({ ...report, ...summary }), batch.id)
     .run();
-  await audit(c, 'confirm', 'import', batch.id, {
-    after: { imported: inserted, parentSkipped, duplicateAction, duplicateReason: duplicateReason || null },
-  });
-  return json({ imported: inserted, failed: report.failed, parentSkipped });
+  await audit(c, 'confirm', 'import', batch.id, { after: summary });
+  return json({ imported: inserted, linked, failed: report.failed, parentSkipped, skipped: parentSkipped });
 });
 
 /**
- * Creates or links import parents with the same rules as the forms. Rows in the
- * same file that share an email or phone resolve to one parent (rows with an IC
- * resolve through the IC itself).
+ * Creates or reuses import parents/teachers with the same rules as the forms,
+ * and gives each a login. Rows in one file with the same IC / Passport No.
+ * resolve to one record (the first row creates it, later rows match its IC).
  */
-function makeParentImporter(c, schoolId, batchId, duplicateAction, duplicateReason) {
-  const seen = new Map();
-  const created = new Set();
-  const keysOf = (r, f) => {
-    const keys = [];
-    if (r[f.email]) keys.push(`e:${String(r[f.email]).trim().toLowerCase()}`);
-    const ph = normalizePhone(r[f.phone]);
-    if (ph) keys.push(`p:${ph}`);
-    return keys;
-  };
-  return async (r, f, studentId) => {
-    const ic = r[`${f.ic}_enc`] ? await decryptIc(c.env, r[`${f.ic}_enc`]) : null;
-    const keys = keysOf(r, f);
-    const input = {
-      ic,
-      name: r[f.name],
-      email: r[f.email],
-      phone: r[f.phone],
-      address: r.address,
-      createAnyway: duplicateAction === 'create',
-      duplicateReason,
-    };
-    // A contact first created by this file is the same person (e.g. siblings), not a duplicate.
-    const fromFile = !ic && keys.map((k) => seen.get(k)).find((p) => p && created.has(p.id));
-    let plan = fromFile ? { parent: fromFile } : await planParent(c.env, input, { schoolId });
-    if (plan.conflict && duplicateAction === 'link') {
-      plan = await planParent(c.env, { parentId: plan.conflict[0].id, email: input.email, phone: input.phone }, { schoolId });
-    }
-    if (plan.conflict || plan.error) return null;
-    const parent = await commitParent(c.env, plan);
-    if (plan.create) created.add(parent.id);
-    for (const k of keys) if (!seen.has(k)) seen.set(k, parent);
-    if (studentId) await linkParentToStudent(c.env, parent.id, studentId, schoolId);
-    if (plan.create) {
-      await audit(c, 'create', 'parent', parent.id, {
-        after: { via: 'import', batchId, duplicateReason: plan.create.duplicateReason, duplicateOf: plan.create.duplicateOf },
+function makePeopleImporter(c, schoolId, batchId, duplicateAction, duplicateReason) {
+  const env = c.env;
+  const appUrl = env.APP_URL || new URL(c.req.url).origin;
+  const inputOf = async (r, f) => ({
+    ic: await openIc(env, r, f.ic),
+    name: r[f.name],
+    email: r[f.email],
+    phone: r[f.phone],
+    address: r.address,
+    createAnyway: duplicateAction === 'create',
+    duplicateReason,
+  });
+  return {
+    async parent(r, f, studentId) {
+      const input = await inputOf(r, f);
+      let plan = await planParent(env, input, { schoolId });
+      if (plan.conflict && duplicateAction === 'link') {
+        const same = plan.conflict.find((m) => m.kind === 'parent');
+        if (same) plan = await planParent(env, { parentId: same.id, email: input.email, phone: input.phone }, { schoolId });
+      }
+      if (plan.conflict || plan.error) return null;
+      const parent = await commitParent(env, plan);
+      if (studentId) await linkParentToStudent(env, parent.id, studentId, schoolId);
+      await ensureParentLogin(env, parent, schoolId, { appUrl });
+      if (plan.create) {
+        await audit(c, 'create', 'parent', parent.id, {
+          after: { via: 'import', batchId, duplicateReason: plan.create.duplicateReason, duplicateOf: plan.create.duplicateOf },
+        });
+      }
+      return { ...parent, created: !!plan.create };
+    },
+    async teacher(r) {
+      const input = await inputOf(r, PERSON_ROW);
+      let plan = await planTeacher(env, input, { schoolId });
+      if (plan.conflict && duplicateAction === 'link') {
+        const same = plan.conflict.find((m) => m.kind === 'teacher');
+        if (same) plan = await planTeacher(env, { teacherId: same.id, email: input.email, phone: input.phone }, { schoolId });
+      }
+      if (plan.conflict || plan.error) return null;
+      const teacher = await commitTeacher(env, plan, schoolId);
+      await addMembership(env, teacher.id, schoolId);
+      await ensureLogin(env, { kind: 'teacher', person: teacher, schoolId, appUrl });
+      await audit(c, plan.create ? 'create' : 'add_membership', 'teacher', teacher.id, {
+        after: { via: 'import', batchId, schoolId, duplicateReason: plan.create?.duplicateReason || null },
       });
-    }
-    return parent;
+      return { ...teacher, created: !!plan.create };
+    },
   };
 }
 
@@ -644,7 +659,7 @@ admin.post('/backups', requireRoles('school_admin'), async (c) => {
   if (!auth.isSuper) return bad('Hanya Super Admin. / Super Admin only.', 403);
   const body = await readJson(c);
   const type = body.type === 'incremental' ? 'incremental' : 'full';
-  const tables = ['schools', 'fee_plans', 'users', 'user_roles', 'students', 'parents', 'parent_students', 'teachers', 'applications', 'interviews', 'scores', 'decisions', 'invoices', 'invoice_lines', 'payments', 'payment_allocations', 'credits', 'receipts', 'refunds', 'write_offs', 'fee_adjustments', 'notifications', 'audit_logs', 'import_batches', 'retention_records'];
+  const tables = ['schools', 'users', 'user_roles', 'students', 'parents', 'parent_students', 'teachers', 'teacher_schools', 'applications', 'interviews', 'scores', 'decisions', 'invoices', 'invoice_lines', 'payments', 'payment_allocations', 'credits', 'receipts', 'refunds', 'write_offs', 'fee_adjustments', 'notifications', 'audit_logs', 'import_batches', 'retention_records'];
   const dump = { generatedAt: nowIso(), type, tables: {} };
   for (const t of tables) {
     const { results } = await c.env.DB.prepare(`SELECT * FROM ${t} LIMIT 20000`).all();
@@ -771,34 +786,24 @@ admin.get('/documents', requireRoles('school_admin', 'bursar'), async (c) => {
 /* ------------------------------- Lookups ----------------------------- */
 admin.get('/lookups', async (c) => {
   const auth = c.get('auth');
-  const empty = { teachers: [], parents: [], students: [], feePlans: [], classes: [] };
+  const empty = { teachers: [], parents: [], students: [] };
   if (!auth.activeSchool) return json(empty);
   const role = auth.isSuper ? 'super_admin' : auth.roleInSchool;
   if (!['super_admin', 'school_admin', 'bursar', 'teacher'].includes(role)) return json(empty);
-  if (role === 'teacher') {
-    const { results } = await c.env.DB.prepare(
-      "SELECT t.id, t.full_name, t.user_id FROM teachers t WHERE t.school_id = ? AND t.status = 'active' ORDER BY t.full_name",
-    ).bind(auth.activeSchool).all();
-    return json({ ...empty, teachers: results });
-  }
   const teachers = await c.env.DB.prepare(
-    "SELECT t.id, t.full_name, t.user_id FROM teachers t WHERE t.school_id = ? AND t.status = 'active' ORDER BY t.full_name",
+    `SELECT t.id, t.full_name, t.user_id FROM teacher_schools tm JOIN teachers t ON t.id = tm.teacher_id
+     WHERE tm.school_id = ? AND tm.status = 'active' ORDER BY t.full_name`,
   ).bind(auth.activeSchool).all();
-  const feePlans = await c.env.DB.prepare('SELECT * FROM fee_plans WHERE school_id = ? AND active = 1').bind(auth.activeSchool).all();
-  const classes = await c.env.DB.prepare(
-    "SELECT DISTINCT class_name FROM students WHERE school_id = ? AND class_name != '' ORDER BY class_name",
-  ).bind(auth.activeSchool).all();
+  if (role === 'teacher') return json({ ...empty, teachers: teachers.results });
   const parents = await c.env.DB.prepare(
     `SELECT DISTINCT p.id, p.full_name, p.email, p.phone FROM parents p JOIN parent_students ps ON ps.parent_id = p.id
      JOIN students s ON s.id = ps.student_id WHERE s.school_id = ? ORDER BY p.full_name LIMIT 500`,
   ).bind(auth.activeSchool).all();
   const students = await c.env.DB.prepare(
-    "SELECT id, full_name, class_name, status FROM students WHERE school_id = ? AND status = 'active' ORDER BY full_name LIMIT 500",
+    "SELECT id, full_name, ic_masked, status FROM students WHERE school_id = ? AND status = 'active' ORDER BY full_name LIMIT 500",
   ).bind(auth.activeSchool).all();
   return json({
     teachers: teachers.results,
-    feePlans: feePlans.results,
-    classes: classes.results.map((r) => r.class_name),
     parents: parents.results,
     students: students.results,
   });

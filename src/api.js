@@ -26,6 +26,10 @@ async function request(path, options = {}) {
   if (res.status === 401 && !path.startsWith('/auth/login') && !path.startsWith('/public')) {
     window.dispatchEvent(new CustomEvent('mduik:unauthorized'));
   }
+  if (res.status === 403 && res.headers.get('content-type')?.includes('application/json')) {
+    const peek = await res.clone().json().catch(() => null);
+    if (peek?.code === 'password_change_required') window.dispatchEvent(new CustomEvent('mduik:password-change'));
+  }
   const contentType = res.headers.get('content-type') || '';
   const data = contentType.includes('application/json') ? await res.json().catch(() => null) : await res.text();
   if (!res.ok) {

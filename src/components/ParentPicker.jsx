@@ -39,20 +39,26 @@ export function takeDuplicateError(err, setValue) {
   return false;
 }
 
-/** The form can be submitted: a parent was selected, or a new one has an IC and name. */
+/** Same rule as the server: uppercase, spaces and hyphens removed. */
+export const normalizeIc = (v) => String(v ?? '').toUpperCase().replace(/[\s-]+/g, '');
+const icSearchable = (v) => /^[A-Z0-9]{5,20}$/.test(normalizeIc(v));
+
+/** The form can be submitted: a record was selected, or a new one has IC / Passport No., name, email and phone. */
 export function parentReady(p) {
   if (p.parentId) return true;
-  if (!p.searched || !p.ic || !p.name.trim()) return false;
+  if (!p.searched || !p.ic || !p.name.trim() || !p.email.trim() || !p.phone.trim()) return false;
   if (p.createAnyway && p.duplicateReason.trim().length < 5) return false;
   return true;
 }
 
 /**
- * Parent section of a form: search by IC first. A match is selected and shown;
- * no match opens the new-parent fields. An email/phone warning from the server
- * offers "link to existing" or "create anyway" with a reason.
+ * Person section of a form (parent, or teacher with kind="teacher"): search by
+ * IC / Passport No. first. A match is selected and shown; no match opens the
+ * new-person fields. An email/phone warning from the server lists parents and
+ * teachers; "use existing" is offered for records of the same kind, otherwise
+ * "create anyway" with a reason.
  */
-export default function ParentPicker({ value, onChange }) {
+export default function ParentPicker({ value, onChange, kind = 'parent' }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -62,7 +68,7 @@ export default function ParentPicker({ value, onChange }) {
     setBusy(true);
     setError('');
     try {
-      const res = await api.get(`/parents/lookup?ic=${encodeURIComponent(value.ic)}`);
+      const res = await api.get(`/${kind === 'teacher' ? 'teachers' : 'parents'}/lookup?ic=${encodeURIComponent(normalizeIc(value.ic))}`);
       set({ searched: true, match: res.match, parentId: res.match?.id || null, duplicates: null, createAnyway: false });
     } catch (err) {
       setError(err.message);
@@ -79,26 +85,24 @@ export default function ParentPicker({ value, onChange }) {
         <Field label={t('parentRecord.icLabel')} hint={t('parentRecord.icHint')} error={error} required>
           <Input
             value={value.ic}
-            inputMode="numeric"
             autoComplete="off"
-            placeholder="000000-00-0000"
             onChange={(e) => onChange((p) => ({ ...emptyParent({ name: p.name, email: p.email, phone: p.phone }), ic: e.target.value }))}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 e.preventDefault();
-                if (value.ic.replace(/\D/g, '').length >= 6) search();
+                if (icSearchable(value.ic)) search();
               }
             }}
           />
         </Field>
-        <button type="button" className="btn btn--ghost" onClick={search} disabled={busy || value.ic.replace(/\D/g, '').length < 6}>
+        <button type="button" className="btn btn--ghost" onClick={search} disabled={busy || !icSearchable(value.ic)}>
           {busy ? <span className="spinner" /> : <Icon name="search" size={15} />} {t('parentRecord.search')}
         </button>
       </div>
 
       {value.searched && value.match && (
         <div className="parentpicker__match">
-          <Alert tone="success" title={t('parentRecord.matchTitle')}>{t('parentRecord.matchHint')}</Alert>
+          <Alert tone="success" title={t('parentRecord.matchTitle')}>{t(kind === 'teacher' ? 'teachers.matchHint' : 'parentRecord.matchHint')}</Alert>
           <KeyValue
             items={[
               { label: t('common.name'), value: value.match.full_name },
@@ -106,10 +110,11 @@ export default function ParentPicker({ value, onChange }) {
               { label: t('common.email'), value: value.match.email || '—' },
               { label: t('common.phone'), value: value.match.phone || '—' },
               { label: t('common.address'), value: value.match.address || '—' },
-              { label: t('parentRecord.linkedSchools'), value: value.match.linkedSchools?.join(', ') || '—' },
+              { label: t('parentRecord.linkedSchools'), value: (value.match.linkedSchools || value.match.schools?.map((x) => x.school_name))?.join(', ') || '—' },
             ]}
           />
-          {value.match.status === 'inactive' && <Alert tone="danger">{t('parentRecord.inactive')}</Alert>}
+          {kind === 'parent' && value.match.status === 'inactive' && <Alert tone="danger">{t('parentRecord.inactive')}</Alert>}
+          {value.match.memberHere && <Alert tone="warning">{t('teachers.alreadyMember')}</Alert>}
           <button type="button" className="btn btn--ghost btn--sm" onClick={reset}>{t('parentRecord.searchAgain')}</button>
         </div>
       )}
@@ -121,10 +126,10 @@ export default function ParentPicker({ value, onChange }) {
             <Field label={t('common.name')} required>
               <Input value={value.name} onChange={(e) => set({ name: e.target.value, duplicates: null })} />
             </Field>
-            <Field label={t('common.email')}>
+            <Field label={t('common.email')} required>
               <Input type="email" value={value.email} onChange={(e) => set({ email: e.target.value, duplicates: null, createAnyway: false })} />
             </Field>
-            <Field label={t('common.phone')}>
+            <Field label={t('common.phone')} required>
               <Input value={value.phone} onChange={(e) => set({ phone: e.target.value, duplicates: null, createAnyway: false })} />
             </Field>
           </div>
@@ -150,12 +155,15 @@ export default function ParentPicker({ value, onChange }) {
                     {[m.email, m.phone, m.ic_masked].filter(Boolean).join(' · ')}
                   </small>
                   <span className="duplist__tags">
+                    <Badge tone="slate">{t(m.kind === 'teacher' ? 'parentRecord.kindTeacher' : 'parentRecord.kindParent')}</Badge>
                     {m.matchedOn?.map((k) => <Badge key={k} tone="amber">{t(`parentRecord.matched_${k}`)}</Badge>)}
                   </span>
                 </div>
-                <button type="button" className="btn btn--primary btn--sm" onClick={() => set({ parentId: m.id, createAnyway: false })}>
-                  {t('parentRecord.linkExisting')}
-                </button>
+                {(m.kind || 'parent') === kind && (
+                  <button type="button" className="btn btn--primary btn--sm" onClick={() => set({ parentId: m.id, createAnyway: false })}>
+                    {t('parentRecord.linkExisting')}
+                  </button>
+                )}
               </li>
             ))}
           </ul>

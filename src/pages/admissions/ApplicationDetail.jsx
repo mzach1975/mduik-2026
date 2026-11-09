@@ -131,9 +131,6 @@ export default function ApplicationDetail() {
                 { label: t('common.ic'), value: app.ic_masked || '—' },
                 { label: t('students.dob'), value: app.dob ? date(app.dob) : '—' },
                 { label: t('students.gender'), value: app.gender ? t(app.gender === 'male' ? 'apply.male' : 'apply.female') : '—' },
-                { label: t('common.phone'), value: app.phone || '—' },
-                { label: t('common.email'), value: app.email || '—' },
-                { label: t('apply.classApplied'), value: app.class_name || '—' },
                 { label: t('common.state'), value: app.state || '—' },
               ]}
             />
@@ -478,24 +475,18 @@ function DecisionModal({ open, onClose, onSubmit, busy, current }) {
 function RegisterModal({ open, onClose, onDone, app }) {
   const { t } = useI18n();
   const { push } = useToast();
-  const { data: settings } = useApi('/school-settings', { enabled: open });
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({
-    fullName: app.student_name || '',
-    className: app.class_name || '',
-    monthlyFee: '',
-  });
+  const [form, setForm] = useState({ fullName: app.student_name || '', studentIc: '' });
   const [parent, setParent] = useState(() => emptyParent({ name: app.parent_name, email: app.parent_email, phone: app.parent_phone }));
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
   async function submit() {
     setBusy(true);
     try {
-      const { monthlyFee: _ignored, ...rest } = form;
       const res = await api.post(`/applications/${app.id}/register`, {
-        ...rest,
+        fullName: form.fullName,
+        studentIc: form.studentIc || undefined,
         ...parentPayload(parent),
-        monthlyFeeCents: monthlyFee ? Math.round(Number(monthlyFee) * 100) : undefined,
       });
       await onDone(res);
     } catch (err) {
@@ -504,8 +495,7 @@ function RegisterModal({ open, onClose, onDone, app }) {
       setBusy(false);
     }
   }
-  const plan = settings?.feePlans?.find((p) => p.active);
-  const monthlyFee = form.monthlyFee || (plan ? (plan.monthly_fee_cents / 100).toFixed(2) : '');
+  const needsIc = !app.ic_masked;
 
   return (
     <Modal
@@ -516,7 +506,7 @@ function RegisterModal({ open, onClose, onDone, app }) {
       footer={
         <>
           <button type="button" className="btn btn--ghost" onClick={onClose}>{t('common.cancel')}</button>
-          <button type="button" className="btn btn--primary" disabled={busy || !parentReady(parent)} onClick={submit}>
+          <button type="button" className="btn btn--primary" disabled={busy || !form.fullName.trim() || (needsIc && !form.studentIc.trim()) || !parentReady(parent)} onClick={submit}>
             {busy && <span className="spinner spinner--light" />} {t('applications.registerStudent')}
           </button>
         </>
@@ -526,13 +516,11 @@ function RegisterModal({ open, onClose, onDone, app }) {
         <Field label={t('applications.studentDetails')} className="formgrid__full">
           <Input value={form.fullName} onChange={(e) => set('fullName', e.target.value)} />
         </Field>
-        <Field label={t('applications.classOnRegistration')}>
-          <Input value={form.className} onChange={(e) => set('className', e.target.value)} />
-        </Field>
-        <Field label={t('applications.monthlyFeeOnRegistration')} hint={`RM`}>
-          <Input type="number" min="0" step="0.01" value={form.monthlyFee} placeholder={plan ? (plan.monthly_fee_cents / 100).toFixed(2) : ''} onChange={(e) => set('monthlyFee', e.target.value)} />
+        <Field label={t('common.ic')} required={needsIc} hint={needsIc ? t('students.icHint') : app.ic_masked}>
+          <Input value={form.studentIc} onChange={(e) => set('studentIc', e.target.value)} placeholder={app.ic_masked || ''} disabled={!needsIc} />
         </Field>
       </div>
+      <Alert tone="info">{t('applications.feeFromSchool')}</Alert>
       <h4 className="detaillabel">{t('applications.parentInfo')}</h4>
       <ParentPicker value={parent} onChange={setParent} />
       <Alert tone="warning">{t('applications.arrearsWarning')}</Alert>

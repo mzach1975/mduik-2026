@@ -12,6 +12,7 @@ import Privacy from './pages/public/Privacy';
 import Login from './pages/auth/Login';
 import Forgot from './pages/auth/Forgot';
 import ResetPassword from './pages/auth/ResetPassword';
+import ForcePassword from './pages/auth/ForcePassword';
 
 import Dashboard from './pages/Dashboard';
 import Applications from './pages/admissions/Applications';
@@ -57,6 +58,7 @@ function RequireAuth({ children }) {
   const location = useLocation();
   if (loading) return <Splash />;
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
+  if (user.mustChangePassword) return <ForcePassword />;
   return children;
 }
 

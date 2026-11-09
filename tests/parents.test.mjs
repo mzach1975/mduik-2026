@@ -5,11 +5,24 @@ import { createInvoice } from '../worker/src/lib/finance.js';
 
 const IC = '800101-14-5566';
 
-/** Registers an accepted applicant at a school and returns the response. */
+let seq = 0;
+/**
+ * Registers an accepted applicant at a school and returns the response. Each
+ * call gets its own student IC, and a new parent gets a unique email/phone
+ * unless the form gives them (they are mandatory for a new parent).
+ */
 async function register(t, who, schoolId, form = {}, app = {}) {
+  const n = ++seq;
   const appId = t.acceptedApplication(schoolId, app);
-  return t.call(who, 'POST', `/applications/${appId}/register`, { className: '1A', ...form });
+  const defaults = { studentIc: `S${String(n).padStart(8, '0')}` };
+  if (!form.parentId) {
+    defaults.parentEmail = `p${n}@test.my`;
+    defaults.parentPhone = `017${String(n).padStart(7, '0')}`;
+  }
+  return t.call(who, 'POST', `/applications/${appId}/register`, { ...defaults, ...form });
 }
+
+const parentUserOf = (t, parentId, school) => t.asUser(t.one('SELECT user_id FROM parents WHERE id = ?', parentId).user_id, school);
 
 test('IC match links the existing parent with no duplicate record', async () => {
   const t = await setup();
@@ -59,7 +72,7 @@ test('email or phone match triggers the duplicate warning', async () => {
   assert.equal(first.status, 201);
 
   // New IC, same email: warning, nothing written.
-  const byEmail = await register(t, 'adminB', 'sch_b', { parentIc: '900202-10-1234', parentName: 'Other', parentEmail: 'AMINAH@test.my' });
+  const byEmail = await register(t, 'adminB', 'sch_b', { parentIc: '900202-10-1234', parentName: 'Other', parentEmail: 'AMINAH@test.my', parentPhone: '0199990000' });
   assert.equal(byEmail.status, 409);
   assert.equal(byEmail.data.code, 'duplicate_contact');
   assert.equal(byEmail.data.matches[0].id, first.data.parentId);
@@ -72,13 +85,15 @@ test('email or phone match triggers the duplicate warning', async () => {
   assert.deepEqual(byPhone.data.matches[0].matchedOn, ['phone']);
 
   // "Create anyway" needs a reason.
-  const noReason = await register(t, 'adminB', 'sch_b', { parentIc: '900202-10-1234', parentName: 'Other', parentEmail: 'aminah@test.my', createAnyway: true });
+  const noReason = await register(t, 'adminB', 'sch_b', { parentIc: '900202-10-1234', parentName: 'Other', parentEmail: 'aminah.family@test.my', parentPhone: '012-3456789', createAnyway: true });
   assert.equal(noReason.status, 400);
   assert.equal(noReason.data.code, 'reason_required');
+  // "Create anyway" is allowed for a shared phone; a shared email would collide with the existing login.
   const created = await register(t, 'adminB', 'sch_b', {
     parentIc: '900202-10-1234',
     parentName: 'Other',
-    parentEmail: 'aminah@test.my',
+    parentEmail: 'aminah.family@test.my',
+    parentPhone: '012-3456789',
     createAnyway: true,
     duplicateReason: 'Shared family email',
   });
@@ -97,7 +112,7 @@ test('manual creation and bulk import apply the same duplicate check', async () 
   const first = await register(t, 'adminA', 'sch_a', { parentIc: IC, parentName: 'Aminah', parentEmail: 'aminah@test.my' });
   const studentId = first.data.studentId;
 
-  const manual = await t.call('adminA', 'POST', '/parents', { studentId, ic: '700303-03-3333', fullName: 'Second', email: 'aminah@test.my' });
+  const manual = await t.call('adminA', 'POST', '/parents', { studentId, ic: '700303-03-3333', fullName: 'Second', email: 'aminah@test.my', phone: '0130000000' });
   assert.equal(manual.status, 409);
   assert.equal(manual.data.code, 'duplicate_contact');
 
@@ -108,9 +123,9 @@ test('manual creation and bulk import apply the same duplicate check', async () 
 
   const dry = await t.call('adminA', 'POST', '/imports', {
     type: 'students',
-    rows: [{ full_name: 'Imported Child', parent_name: 'Someone', parent_email: 'aminah@test.my' }],
+    rows: [{ full_name: 'Imported Child', ic: 'BC1234567', parent_name: 'Someone', parent_ic: '770707-07-7777', parent_email: 'aminah@test.my', parent_phone: '0170000999' }],
   });
-  assert.equal(dry.status, 201);
+  assert.equal(dry.status, 201, JSON.stringify(dry.data));
   assert.equal(dry.data.batch.duplicates, 1);
   assert.equal(dry.data.report.rows[0].duplicates[0].id, first.data.parentId);
 
@@ -125,10 +140,11 @@ test('manual creation and bulk import apply the same duplicate check', async () 
   // Import IC values are not stored in plain text in the report.
   const dryIc = await t.call('adminA', 'POST', '/imports', {
     type: 'parents',
-    rows: [{ full_name: 'Ic Parent', ic: '650505-05-5050', email: 'icparent@test.my' }],
+    rows: [{ full_name: 'Ic Parent', ic: '650505-05-5050', email: 'icparent@test.my', phone: '0145555555' }],
   });
   const report = t.one('SELECT report_json FROM import_batches WHERE id = ?', dryIc.data.batch.id).report_json;
   assert.ok(!report.includes('650505'));
+  assert.ok(!JSON.stringify(dryIc.data).includes('_enc'));
 });
 
 test('School Admin cannot edit a parent whose linked students are all in another school', async () => {
@@ -136,16 +152,17 @@ test('School Admin cannot edit a parent whose linked students are all in another
   const reg = await register(t, 'adminA', 'sch_a', { parentIc: IC, parentName: 'Aminah', parentEmail: 'aminah@test.my' });
   const pid = reg.data.parentId;
 
+  const before = t.one('SELECT phone FROM parents WHERE id = ?', pid).phone;
   const denied = await t.call('adminB', 'PATCH', `/parents/${pid}`, { phone: '0199999999' });
   assert.equal(denied.status, 403);
-  assert.equal(t.one('SELECT phone FROM parents WHERE id = ?', pid).phone, '');
+  assert.equal(t.one('SELECT phone FROM parents WHERE id = ?', pid).phone, before);
 
   const allowed = await t.call('adminA', 'PATCH', `/parents/${pid}`, { phone: '0199999999' });
   assert.equal(allowed.status, 200);
   assert.equal(t.one('SELECT phone FROM parents WHERE id = ?', pid).phone, '0199999999');
 
   // Parents can update their own contact details.
-  const parentUser = { id: t.one('SELECT user_id FROM parents WHERE id = ?', pid).user_id, school: 'sch_a' };
+  const parentUser = parentUserOf(t, pid, 'sch_a');
   const own = await t.call(parentUser, 'PATCH', '/portal/contact', { phone: '0188888888' });
   assert.equal(own.status, 200);
   assert.equal(t.one('SELECT phone FROM parents WHERE id = ?', pid).phone, '0188888888');
@@ -185,7 +202,7 @@ test('a parent with children at two schools sees two cards and a summed total', 
     schoolId: 'sch_b', studentId: b.data.studentId, type: 'monthly', period: '2026-02', dueDate: '2026-02-10', amountCents: 10000, description: 'Feb',
   });
 
-  const parentUser = { id: t.one('SELECT user_id FROM parents WHERE id = ?', a.data.parentId).user_id, school: 'sch_a' };
+  const parentUser = parentUserOf(t, a.data.parentId, 'sch_a');
   const res = await t.call(parentUser, 'GET', '/portal/children');
   assert.equal(res.status, 200, JSON.stringify(res.data));
   const { children, schools, totalOutstanding } = res.data;
@@ -203,7 +220,7 @@ test('a parent with children at two schools sees two cards and a summed total', 
 
   // Only linked children are visible.
   const other = await register(t, 'adminA', 'sch_a', { parentIc: '910101-01-0101', parentName: 'Other', parentEmail: 'other@test.my' });
-  const otherUser = { id: t.one('SELECT user_id FROM parents WHERE id = ?', other.data.parentId).user_id, school: 'sch_a' };
+  const otherUser = parentUserOf(t, other.data.parentId, 'sch_a');
   const otherView = await t.call(otherUser, 'GET', '/portal/children');
   assert.equal(otherView.data.children.length, 1);
   assert.equal((await t.call(otherUser, 'GET', `/portal/children/${a.data.studentId}`)).status, 403);
@@ -249,7 +266,7 @@ test('a student who withdraws keeps that school’s arrears there', async () => 
   assert.equal(res.status, 200);
   const arrearsA = t.one("SELECT SUM(amount_cents - paid_cents - credited_cents - waived_cents) AS n FROM invoices WHERE school_id = 'sch_a' AND status IN ('unpaid','partial')").n;
   assert.equal(arrearsA, 20000);
-  const parentUser = { id: t.one('SELECT user_id FROM parents WHERE id = ?', a.data.parentId).user_id, school: 'sch_b' };
+  const parentUser = parentUserOf(t, a.data.parentId, 'sch_b');
   const portal = await t.call(parentUser, 'GET', '/portal/children');
   assert.equal(portal.data.children.find((c) => c.school_id === 'sch_a').outstanding, 20000);
   assert.equal(portal.data.children.find((c) => c.school_id === 'sch_b').outstanding, 20000);
@@ -268,6 +285,7 @@ test('the public application form does not create a parent', async () => {
     parentEmail: 'new@test.my',
     parentPhone: '0123456789',
     parentIc: IC,
+    ic: 'AB1234567',
     reason: 'Interest',
     education: 'Primary',
     consent: true,

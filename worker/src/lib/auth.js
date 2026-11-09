@@ -1,5 +1,5 @@
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import { id, nowIso, normalizeIc, maskIc, bad, json, today } from './util.js';
+import { id, nowIso, normalizeIc, validIc, maskIc, bad, json, today } from './util.js';
 
 const enc = new TextEncoder();
 const decoder = new TextDecoder();
@@ -79,6 +79,30 @@ async function icKey(env) {
   const secret = env.IC_KEY || env.JWT_SECRET || 'mduik-development-ic-key';
   const digest = await crypto.subtle.digest('SHA-256', enc.encode(secret));
   return crypto.subtle.importKey('raw', digest, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+}
+
+/**
+ * Parents and teachers start with their IC / Passport No. as the password.
+ * That value is not stored again: the sign-in check compares the keyed IC hash
+ * (Web Crypto) with users.ic_hash, so creating many logins costs almost no CPU.
+ * PBKDF2 is used once the user sets their own password.
+ */
+export const INITIAL_ID_PASSWORD = 'idhash$initial';
+
+/** Check a password against a user row, including the initial IC password. */
+export async function verifyUserPassword(env, user, password) {
+  if (!user) return false;
+  if (user.password_hash === INITIAL_ID_PASSWORD) {
+    if (!user.ic_hash || !validIc(password)) return false;
+    return timingSafeEqual(await hashIc(env, password), user.ic_hash);
+  }
+  return verifyPassword(password, user.password_hash);
+}
+
+/** True when the password is the user's own IC / Passport No. */
+export async function isOwnIc(env, user, password) {
+  if (!user?.ic_hash || !validIc(password)) return false;
+  return (await hashIc(env, password)) === user.ic_hash;
 }
 
 export async function encryptIc(env, value) {
@@ -229,6 +253,10 @@ export async function authMiddleware(c, next) {
   const token = getCookie(c, SESSION_COOKIE);
   const auth = await resolveAuth(c.env, token);
   if (!auth) return bad('Sesi tamat. Sila log masuk semula. / Session expired. Please sign in.', 401);
+  // First login: nothing else works until the initial password is changed.
+  if (auth.user.must_change_password) {
+    return bad('Sila tukar kata laluan anda dahulu. / Please change your password first.', 403, { code: 'password_change_required' });
+  }
   c.set('auth', auth);
   await next();
 }
@@ -324,6 +352,7 @@ export function publicUser(auth) {
     name: auth.user.full_name,
     email: auth.user.email,
     language: auth.user.language,
+    mustChangePassword: !!auth.user.must_change_password,
     isSuper: auth.isSuper,
     activeSchool: auth.activeSchool,
     role: auth.roleInSchool,

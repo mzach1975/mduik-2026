@@ -97,7 +97,6 @@ export default function Portal() {
                 <span className="avatar avatar--teal">{child.full_name.split(' ').map((x) => x[0]).slice(0, 2).join('')}</span>
                 <div>
                   <strong>{child.full_name}</strong>
-                  <small>{child.class_name || '—'}</small>
                 </div>
                 <StatusBadge status={child.status} />
               </div>

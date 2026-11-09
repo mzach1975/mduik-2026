@@ -22,8 +22,15 @@ function hashPassword(password) {
   return `pbkdf2$100000$${salt.toString('base64')}$${bits.toString('base64')}`;
 }
 
+const normalizePhone = (v) => {
+  let d = String(v || '').replace(/\D/g, '');
+  if (d.startsWith('60')) d = `0${d.slice(2)}`;
+  return d.length >= 7 ? d : '';
+};
+
+// Same normaliser as the Worker: uppercase, spaces and hyphens removed.
 function encryptIc(ic) {
-  const digits = String(ic).replace(/\D/g, '');
+  const digits = String(ic).toUpperCase().replace(/[\s-]+/g, '');
   const key = createHash('sha256').update(IC_KEY).digest();
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
@@ -33,7 +40,7 @@ function encryptIc(ic) {
   return {
     enc: combined.toString('base64'),
     hash: createHash('sha256').update(`${IC_PEPPER}${digits}`).digest('hex'),
-    masked: `******-**-${digits.slice(-4)}`,
+    masked: `********${digits.slice(-4)}`,
   };
 }
 
@@ -137,24 +144,6 @@ for (const s of schools) {
   });
 }
 
-/* ------------------------------- Fee plans ----------------------------- */
-const plans = [
-  { id: 'fee_tahfiz_std', school: 'sch_tahfiz', name: 'Tahfiz Standard', monthly: 18000, reg: 25000 },
-  { id: 'fee_tahfiz_hifz', school: 'sch_tahfiz', name: 'Tahfiz Hifz', monthly: 22000, reg: 25000 },
-  { id: 'fee_islam_std', school: 'sch_islam', name: 'Pengajian Islam Standard', monthly: 15000, reg: 20000 },
-];
-for (const p of plans) {
-  ins('fee_plans', {
-    id: p.id,
-    school_id: p.school,
-    name: p.name,
-    monthly_fee_cents: p.monthly,
-    registration_fee_cents: p.reg,
-    active: 1,
-    created_at: NOW,
-  });
-}
-
 /* -------------------------------- Users -------------------------------- */
 const users = [
   { id: 'u_super', email: 'super@mduik.my', name: 'Dato’ Zakaria bin Alli', role: 'super_admin', school: null, password: SUPER_PWD, ic: '780203085512', phone: '019-200 1122' },
@@ -196,20 +185,25 @@ ins('user_roles', { id: 'url_parent_s2', user_id: 'u_parent1', school_id: 'sch_i
 
 /* ------------------------------- Parents ------------------------------- */
 const parents = [
-  { id: 'par1', name: 'Encik Hassan bin Abdullah', email: 'ibubapa@mduik.my', phone: '012-345 6789', user: 'u_parent1', address: 'No. 8, Jalan Seri Damai, 50480 Kuala Lumpur' },
-  { id: 'par2', name: 'Puan Rahimah binti Salleh', email: 'rahimah@example.my', phone: '013-222 3344', user: null, address: 'Jalan Ampang, Kuala Lumpur' },
-  { id: 'par3', name: 'Encik Omar bin Yusof', email: 'omar@example.my', phone: '012-888 7766', user: null, address: 'Setapak, Kuala Lumpur' },
-  { id: 'par4', name: 'Encik Yusof bin Ahmad', email: 'yusof@example.my', phone: '019-777 6655', user: null, address: 'Gombak, Selangor' },
-  { id: 'par5', name: 'Puan Salmah binti Isa', email: 'salmah@example.my', phone: '017-555 4433', user: null, address: 'Shah Alam, Selangor' },
-  { id: 'par6', name: 'Encik Azhar bin Kamal', email: 'azhar@example.my', phone: '016-444 3322', user: null, address: 'Klang, Selangor' },
+  { id: 'par1', ic: '850101145566', name: 'Encik Hassan bin Abdullah', email: 'ibubapa@mduik.my', phone: '012-345 6789', user: 'u_parent1', address: 'No. 8, Jalan Seri Damai, 50480 Kuala Lumpur' },
+  { id: 'par2', ic: '870422105512', name: 'Puan Rahimah binti Salleh', email: 'rahimah@example.my', phone: '013-222 3344', user: null, address: 'Jalan Ampang, Kuala Lumpur' },
+  { id: 'par3', ic: '800917085513', name: 'Encik Omar bin Yusof', email: 'omar@example.my', phone: '012-888 7766', user: null, address: 'Setapak, Kuala Lumpur' },
+  { id: 'par4', ic: '790305145514', name: 'Encik Yusof bin Ahmad', email: 'yusof@example.my', phone: '019-777 6655', user: null, address: 'Gombak, Selangor' },
+  { id: 'par5', ic: '880614085515', name: 'Puan Salmah binti Isa', email: 'salmah@example.my', phone: '017-555 4433', user: null, address: 'Shah Alam, Selangor' },
+  { id: 'par6', ic: 'A12345678', name: 'Encik Azhar bin Kamal', email: 'azhar@example.my', phone: '016-444 3322', user: null, address: 'Klang, Selangor' },
 ];
 for (const p of parents) {
+  const ic = encryptIc(p.ic);
   ins('parents', {
     id: p.id,
     full_name: p.name,
     email: p.email,
     phone: p.phone,
-    ic_masked: null,
+    phone_norm: normalizePhone(p.phone),
+    ic_hash: ic.hash,
+    ic_enc: ic.enc,
+    ic_masked: ic.masked,
+    status: 'active',
     address: p.address,
     user_id: p.user,
     created_at: NOW,
@@ -218,23 +212,29 @@ for (const p of parents) {
 
 /* ------------------------------ Teachers ------------------------------- */
 const teachers = [
-  { id: 'tch_guru1_s1', school: 'sch_tahfiz', user: 'u_guru1', name: 'Ustaz Hafiz bin Salleh', email: 'guru1@mduik.my', phone: '011-2233 4455' },
-  { id: 'tch_guru1_s2', school: 'sch_islam', user: 'u_guru1', name: 'Ustaz Hafiz bin Salleh', email: 'guru1@mduik.my', phone: '011-2233 4455' },
-  { id: 'tch_guru2_s1', school: 'sch_tahfiz', user: 'u_guru2', name: 'Ustazah Aminah binti Yusof', email: 'guru2@mduik.my', phone: '011-3344 5566' },
-  { id: 'tch_guru3_s1', school: 'sch_tahfiz', user: null, name: 'Ustaz Kamarul bin Azman', email: 'kamarul@mduik.my', phone: '013-998 8776' },
+  { id: 'tch_guru1', schools: ['sch_tahfiz', 'sch_islam'], user: 'u_guru1', ic: '880910145566', name: 'Ustaz Hafiz bin Salleh', email: 'guru1@mduik.my', phone: '011-2233 4455' },
+  { id: 'tch_guru2', schools: ['sch_tahfiz'], user: 'u_guru2', ic: '891112085577', name: 'Ustazah Aminah binti Yusof', email: 'guru2@mduik.my', phone: '011-3344 5566' },
+  { id: 'tch_guru3', schools: ['sch_tahfiz'], user: null, ic: '870615105588', name: 'Ustaz Kamarul bin Azman', email: 'kamarul@mduik.my', phone: '013-998 8776' },
 ];
 for (const t of teachers) {
+  const ic = encryptIc(t.ic);
   ins('teachers', {
     id: t.id,
-    school_id: t.school,
+    school_id: t.schools[0],
     user_id: t.user,
     full_name: t.name,
     email: t.email,
     phone: t.phone,
-    ic_masked: '******-**-7788',
+    phone_norm: normalizePhone(t.phone),
+    ic_hash: ic.hash,
+    ic_enc: ic.enc,
+    ic_masked: ic.masked,
     status: 'active',
     created_at: NOW,
   });
+  for (const school of t.schools) {
+    ins('teacher_schools', { id: `tsm_${t.id}_${school}`, teacher_id: t.id, school_id: school, status: 'active', created_at: NOW });
+  }
 }
 
 /* ------------------------------ Students ------------------------------- */
@@ -268,11 +268,7 @@ for (const s of students) {
     ic_masked: ic.masked,
     dob: s.dob,
     gender: s.gender,
-    class_name: s.cls,
     address: 'Kuala Lumpur',
-    phone: s.phone || '',
-    email: s.email || '',
-    fee_plan_id: s.plan,
     monthly_fee_cents: s.fee,
     monthly_tracking: s.tracking,
     tracking_start: s.start,
@@ -281,7 +277,7 @@ for (const s of students) {
     application_id: s.id === 'st4' ? 'app6' : null,
     created_at: '2026-01-05T02:00:00.000Z',
   });
-  ins('parent_students', { id: `ps_${s.id}`, parent_id: s.parent, student_id: s.id, relationship: 'guardian' });
+  ins('parent_students', { id: `ps_${s.id}`, parent_id: s.parent, student_id: s.id, relationship: 'guardian', school_id: s.school });
 }
 
 /* ----------------------------- Applications ---------------------------- */
@@ -311,8 +307,6 @@ for (const a of applications) {
     dob: a.dob,
     gender: a.gender,
     address: 'Kuala Lumpur',
-    phone: a.pphone,
-    email: a.pemail,
     education: 'Sekolah rendah kebangsaan, tahun semasa.',
     reason: 'Ingin mendalami ilmu Al-Quran dan pendidikan Islam secara tersusun.',
     parent_name: a.pname,

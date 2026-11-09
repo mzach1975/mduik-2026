@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { encryptIc, hashIc } from '../lib/auth.js';
-import { id, nowIso, today, readJson, bad, json, yearOf, maskIc } from '../lib/util.js';
+import { id, nowIso, today, readJson, bad, json, yearOf, validIc } from '../lib/util.js';
 import { nextNumber } from '../lib/finance.js';
 import { notify, notifyRoles, subjectFor } from '../lib/notify.js';
 import { auditSystem } from '../lib/audit.js';
@@ -51,7 +51,7 @@ function schoolCode(school) {
 
 pub.post('/applications', async (c) => {
   const body = await readJson(c);
-  const required = ['schoolId', 'studentName', 'dob', 'gender', 'parentName', 'parentEmail', 'parentPhone', 'category', 'reason', 'education'];
+  const required = ['schoolId', 'studentName', 'ic', 'dob', 'gender', 'parentName', 'parentEmail', 'parentPhone', 'category', 'reason', 'education'];
   const missing = required.filter((f) => !body[f] || String(body[f]).trim() === '');
   if (!body.consent) missing.push('consent');
   const school = await c.env.DB.prepare("SELECT * FROM schools WHERE id = ? AND status = 'active'").bind(body.schoolId).first();
@@ -59,7 +59,11 @@ pub.post('/applications', async (c) => {
   if (!['tahfiz', 'islamic_studies'].includes(body.category)) return bad('Kategori tidak sah. / Invalid category.');
   const age = calculateAge(body.dob);
   const ageEligible = age !== null && age >= 4 && age <= 25;
-  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(body.parentEmail || '')) && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(body.email || body.parentEmail));
+  // Student phone and email are not collected; contact goes to the parent.
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(body.parentEmail || ''));
+  if (body.ic && !validIc(body.ic)) {
+    return bad('No. IC / Pasport tidak sah (5–20 huruf atau angka). / Invalid IC / Passport No. (5–20 letters or digits).', 400, { code: 'ic_invalid' });
+  }
   const documents = Array.isArray(body.documents)
     ? body.documents.filter((d) => typeof d === 'string' && d.length <= 80).slice(0, 10)
     : [];
@@ -79,8 +83,8 @@ pub.post('/applications', async (c) => {
   const status = incomplete ? 'incomplete' : 'submitted';
   await c.env.DB.prepare(
     `INSERT INTO applications (id, school_id, reference, category, student_name, ic_masked, ic_hash, ic_enc, dob, gender, address,
-      phone, email, education, reason, parent_name, parent_email, parent_phone, language, status, flags, documents, submitted_at, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      education, reason, parent_name, parent_email, parent_phone, language, status, flags, documents, submitted_at, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   )
     .bind(
       appId,
@@ -94,8 +98,6 @@ pub.post('/applications', async (c) => {
       body.dob,
       body.gender,
       String(body.address || '').slice(0, 400),
-      String(body.phone || '').slice(0, 40),
-      String(body.email || body.parentEmail || '').slice(0, 160),
       String(body.education || '').slice(0, 600),
       String(body.reason || '').slice(0, 1200),
       String(body.parentName).slice(0, 160),
@@ -146,9 +148,9 @@ pub.get('/applications/status', async (c) => {
   if (!reference || !contact) return bad('Nombor rujukan dan e-mel/nombor telefon diperlukan. / Reference and email/phone are required.');
   const app = await c.env.DB.prepare(
     `SELECT a.*, s.name AS school_name FROM applications a JOIN schools s ON s.id = a.school_id
-     WHERE upper(a.reference) = upper(?) AND (lower(a.parent_email) = ? OR a.parent_phone = ? OR lower(a.email) = ?)`,
+     WHERE upper(a.reference) = upper(?) AND (lower(a.parent_email) = ? OR a.parent_phone = ?)`,
   )
-    .bind(reference, contact, contact, contact)
+    .bind(reference, contact, contact)
     .first();
   if (!app) return bad('Tiada permohonan sepadan. / No matching application.', 404);
   const interview = await c.env.DB.prepare('SELECT scheduled_at, mode, location, status FROM interviews WHERE application_id = ? ORDER BY scheduled_at DESC LIMIT 1')

@@ -18,9 +18,11 @@ import {
   useToast,
 } from '../components/ui';
 
+const feeOk = (v) => v !== '' && Number.isFinite(Number(v)) && Number(v) >= 0;
+
 const EMPTY = {
   name: '', shortName: '', category: 'tahfiz', state: '', address: '', phone: '', email: '',
-  monthlyFee: '150.00', registrationFee: '200.00', monthlyDueDay: '7',
+  monthlyFee: '', registrationFee: '', monthlyDueDay: '7',
   bankName: '', bankAccount: '', invoicePrefix: 'INV', receiptPrefix: 'RCP',
   adminName: '', adminEmail: '', adminPassword: '',
 };
@@ -183,7 +185,7 @@ export default function Schools() {
         footer={
           <>
             <button type="button" className="btn btn--ghost" onClick={() => setModal(null)}>{t('common.cancel')}</button>
-            <button type="button" className="btn btn--primary" onClick={save} disabled={busy || !form.name}>
+            <button type="button" className="btn btn--primary" onClick={save} disabled={busy || !form.name || !feeOk(form.monthlyFee) || !feeOk(form.registrationFee)}>
               {busy && <span className="spinner spinner--light" />} {modal?.type === 'add' ? t('schools.createSchool') : t('common.saveChanges')}
             </button>
           </>
@@ -218,11 +220,12 @@ export default function Schools() {
         </div>
 
         <h4 className="detaillabel">{t('schools.feesTitle')}</h4>
+        <p className="muted smalltext">{t('schools.feeHint')}</p>
         <div className="formgrid">
-          <Field label={t('schools.monthlyFee')} hint="RM">
+          <Field label={t('schools.monthlyFee')} hint="RM" required>
             <Input type="number" min="0" step="0.01" value={form.monthlyFee} onChange={(e) => setForm((f) => ({ ...f, monthlyFee: e.target.value }))} />
           </Field>
-          <Field label={t('schools.registrationFee')} hint="RM">
+          <Field label={t('schools.registrationFee')} hint="RM" required>
             <Input type="number" min="0" step="0.01" value={form.registrationFee} onChange={(e) => setForm((f) => ({ ...f, registrationFee: e.target.value }))} />
           </Field>
           <Field label={t('schools.monthlyDueDay')} hint={t('schools.dueTitle')}>
