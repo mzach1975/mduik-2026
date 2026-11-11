@@ -28,6 +28,9 @@ pub.get('/schools/:id', async (c) => {
   return json({ school });
 });
 
+// Applicants must be at least 7 years old; there is no maximum age.
+export const MIN_AGE = 7;
+
 function calculateAge(dob) {
   if (!dob) return null;
   const d = new Date(dob);
@@ -51,27 +54,45 @@ function schoolCode(school) {
 
 pub.post('/applications', async (c) => {
   const body = await readJson(c);
-  const required = ['schoolId', 'studentName', 'ic', 'dob', 'gender', 'parentName', 'parentEmail', 'parentPhone', 'category', 'reason', 'education'];
+  const required = ['schoolId', 'studentName', 'ic', 'dob', 'gender', 'parentName', 'parentEmail', 'parentPhone', 'reason', 'education'];
   const missing = required.filter((f) => !body[f] || String(body[f]).trim() === '');
   if (!body.consent) missing.push('consent');
   const school = await c.env.DB.prepare("SELECT * FROM schools WHERE id = ? AND status = 'active'").bind(body.schoolId).first();
   if (!school) return bad('Sekolah tidak dijumpai. / School not found.', 404);
-  if (!['tahfiz', 'islamic_studies'].includes(body.category)) return bad('Kategori tidak sah. / Invalid category.');
+  // The form no longer asks for a category: the school's category is used.
+  const category = ['tahfiz', 'islamic_studies'].includes(school.category)
+    ? school.category
+    : ['tahfiz', 'islamic_studies'].includes(body.category) ? body.category : 'tahfiz';
   const age = calculateAge(body.dob);
-  const ageEligible = age !== null && age >= 4 && age <= 25;
+  const ageEligible = age !== null && age >= MIN_AGE;
   // Student phone and email are not collected; contact goes to the parent.
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(body.parentEmail || ''));
   if (body.ic && !validIc(body.ic)) {
     return bad('No. IC / Pasport tidak sah (5–20 huruf atau angka). / Invalid IC / Passport No. (5–20 letters or digits).', 400, { code: 'ic_invalid' });
   }
-  const documents = Array.isArray(body.documents)
-    ? body.documents.filter((d) => typeof d === 'string' && d.length <= 80).slice(0, 10)
+  const requested = Array.isArray(body.documents)
+    ? [...new Set(body.documents.filter((d) => typeof d === 'string' && d.length <= 80))].slice(0, 10)
     : [];
+  // Supporting documents are mandatory: at least one unclaimed upload.
+  const documents = [];
+  for (const docId of requested) {
+    const doc = await c.env.DB.prepare("SELECT id FROM documents WHERE id = ? AND owner_type = 'application_draft' AND owner_id = 'draft'")
+      .bind(docId)
+      .first();
+    if (doc) documents.push(docId);
+  }
+  if (!documents.length) {
+    return bad(
+      'Sila muat naik dokumen sokongan (Sijil Lahir / MyKad / MyKid / Pasport pelajar dan MyKad / Pasport ibu bapa). / Please upload the supporting documents (student’s Birth Cert / MyKad / MyKid / Passport and parents’ MyKad / Passport).',
+      400,
+      { code: 'documents_required' },
+    );
+  }
   const flags = {
     missingFields: missing,
     ageEligible,
     age,
-    categorySelected: !!body.category,
+    categorySelected: true,
     documentsUploaded: documents.length > 0,
     consent: !!body.consent,
     emailValid,
@@ -90,7 +111,7 @@ pub.post('/applications', async (c) => {
       appId,
       school.id,
       reference,
-      body.category,
+      category,
       String(body.studentName).slice(0, 160),
       ic.masked,
       ic.hash,
@@ -128,16 +149,44 @@ pub.post('/applications', async (c) => {
     subject: `${subjectFor('application_received', lang)} — ${reference}`,
     body:
       lang === 'en'
-        ? `Thank you. Your application ${reference} for ${body.studentName} has been received. Check the status any time with your reference number and this email.`
-        : `Terima kasih. Permohonan ${reference} untuk ${body.studentName} telah diterima. Semak status pada bila-bila masa dengan nombor rujukan dan e-mel ini.`,
+        ? [
+            `Dear ${body.parentName},`,
+            `Thank you. The application for ${body.studentName} to ${school.name} has been received and will be processed.`,
+            `Reference number: ${reference}`,
+            `The school will contact you about the next step, such as an interview. You can check the status any time on ${c.env.APP_URL || ''}/status with your reference number and this email address.`,
+          ].join('\n')
+        : [
+            `Assalamualaikum ${body.parentName},`,
+            `Terima kasih. Permohonan ${body.studentName} ke ${school.name} telah diterima dan akan diproses.`,
+            `Nombor rujukan: ${reference}`,
+            `Pihak sekolah akan menghubungi anda tentang langkah seterusnya, seperti temuduga. Semak status pada bila-bila masa di ${c.env.APP_URL || ''}/status dengan nombor rujukan dan alamat e-mel ini.`,
+          ].join('\n'),
     language: lang,
   });
-  await notifyRoles(c.env, school.id, ['school_admin'], {
+  const adminNotice = {
     type: 'application_received',
-    subject: `Permohonan baharu / New application — ${reference}`,
-    body: `Permohonan baharu daripada ${body.studentName} (${body.parentName}). Status: ${status}.\nNew application from ${body.studentName} (${body.parentName}). Status: ${status}.`,
+    subject: `Permohonan baharu perlu tindakan / New application needs your attention — ${reference}`,
+    body: [
+      `Permohonan baharu diterima untuk ${school.name} dan memerlukan perhatian anda.`,
+      `Rujukan: ${reference} · Pelajar: ${body.studentName} · Ibu bapa: ${body.parentName} · Status: ${status}`,
+      `A new application for ${school.name} has been received and needs your attention.`,
+      `Reference: ${reference} · Student: ${body.studentName} · Parent: ${body.parentName} · Status: ${status}`,
+      `${c.env.APP_URL || ''}/app/applications/${appId}`,
+    ].join('\n'),
     language: 'bm',
-  });
+  };
+  await notifyRoles(c.env, school.id, ['school_admin'], adminNotice);
+  // Also the school's own contact address, unless a School Admin already uses it.
+  const schoolEmail = String(school.email || '').trim();
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(schoolEmail)) {
+    const isAdmin = await c.env.DB.prepare(
+      `SELECT 1 AS ok FROM users u JOIN user_roles ur ON ur.user_id = u.id
+       WHERE lower(u.email) = lower(?) AND ur.school_id = ? AND ur.role = 'school_admin' AND ur.status = 'active' AND u.status = 'active'`,
+    )
+      .bind(schoolEmail, school.id)
+      .first();
+    if (!isAdmin) await notify(c.env, { schoolId: school.id, email: schoolEmail, name: school.name, ...adminNotice });
+  }
   await auditSystem(c.env, 'submit', 'application', appId, { reference, incomplete, schoolId: school.id }, school.id);
   return json({ reference, id: appId, status, flags }, 201);
 });
@@ -146,11 +195,16 @@ pub.get('/applications/status', async (c) => {
   const reference = String(c.req.query('reference') || '').trim();
   const contact = String(c.req.query('contact') || '').trim().toLowerCase();
   if (!reference || !contact) return bad('Nombor rujukan dan e-mel/nombor telefon diperlukan. / Reference and email/phone are required.');
+  // Phone numbers match without spaces, hyphens, brackets or a leading +.
+  const phone = contact.replace(/[\s\-()+]/g, '');
   const app = await c.env.DB.prepare(
-    `SELECT a.*, s.name AS school_name FROM applications a JOIN schools s ON s.id = a.school_id
-     WHERE upper(a.reference) = upper(?) AND (lower(a.parent_email) = ? OR a.parent_phone = ?)`,
+    `SELECT a.*, s.name AS school_name, s.phone AS school_phone, s.email AS school_email
+     FROM applications a JOIN schools s ON s.id = a.school_id
+     WHERE upper(a.reference) = upper(?)
+       AND (lower(a.parent_email) = ?
+         OR (? <> '' AND replace(replace(replace(replace(replace(a.parent_phone, ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') = ?))`,
   )
-    .bind(reference, contact, contact)
+    .bind(reference, contact, phone, phone)
     .first();
   if (!app) return bad('Tiada permohonan sepadan. / No matching application.', 404);
   const interview = await c.env.DB.prepare('SELECT scheduled_at, mode, location, status FROM interviews WHERE application_id = ? ORDER BY scheduled_at DESC LIMIT 1')
@@ -167,6 +221,15 @@ pub.get('/applications/status', async (c) => {
       status: app.status,
       category: app.category,
       schoolName: app.school_name,
+      schoolPhone: app.school_phone || null,
+      schoolEmail: app.school_email || null,
+      documentsCount: (() => {
+        try {
+          return JSON.parse(app.documents || '[]').length;
+        } catch {
+          return 0;
+        }
+      })(),
       submittedAt: app.submitted_at,
       offerStatus: app.offer_status,
       offerDeadline: app.offer_deadline,

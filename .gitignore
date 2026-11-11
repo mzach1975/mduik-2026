@@ -5,3 +5,5 @@ dist/
 .wrangler-dry/
 *.log
 .DS_Store
+CLAUDE.md
+CODE.md

@@ -57,12 +57,19 @@ export default function InterviewDetail() {
 
   const { interview } = data;
   const finalMark = data.finalMark;
-  const showAllScores = isAdmin || scores.length >= 2;
+  const showAllScores = isAdmin || scores.length >= Math.max(1, data.assessors?.length || 0);
   const visibleScores = showAllScores ? scores : scores.filter((s) => s.assessor_id === user?.id);
 
   function setMark(key, value, max) {
     const num = value === '' ? '' : Math.max(0, Math.min(max, Number(value)));
     setMarks((m) => ({ ...m, [key]: num }));
+  }
+
+  function setCheck(key, patch) {
+    setMarks((m) => {
+      const list = m.checklist && typeof m.checklist === 'object' ? m.checklist : {};
+      return { ...m, checklist: { ...list, [key]: { ...(list[key] || {}), ...patch } } };
+    });
   }
 
   async function submit() {
@@ -166,22 +173,42 @@ export default function InterviewDetail() {
             </Card>
           ))}
 
-          <Card title={t('interviews.checklist')} subtitle={t('interviews.checklistHint')}>
-            <div className="checklist">
-              {rubric.checklist.map((item) => (
-                <label className="checkline checkline--box" key={item.id}>
-                  <input
-                    type="checkbox"
-                    checked={!!marks.checklist?.[item.id]}
-                    onChange={(e) =>
-                      setMarks((m) => ({ ...m, checklist: { ...(m.checklist || {}), [item.id]: e.target.checked } }))
-                    }
-                  />
-                  <span>{lang === 'en' ? item.en : item.bm}</span>
-                </label>
-              ))}
+          {rubric.checklist.map((section) => (
+            <Card key={section.id} title={`${section.id}. ${lang === 'en' ? section.en : section.bm}`} subtitle={t('interviews.checklistHint')} actions={<Badge tone="slate">{t('interviews.checklist')}</Badge>}>
+              <div className="checkitems">
+                {(section.items || []).map((item) => {
+                  const entry = marks.checklist?.[item.key] || {};
+                  return (
+                    <div className="checkitem" key={item.key}>
+                      <label className="checkline">
+                        <input type="checkbox" checked={!!entry.checked} onChange={(e) => setCheck(item.key, { checked: e.target.checked })} />
+                        <span>{lang === 'en' ? item.en : item.bm}</span>
+                      </label>
+                      <textarea
+                        className="input checkitem__remark"
+                        rows={2}
+                        maxLength={500}
+                        placeholder={t('interviews.remarkPlaceholder')}
+                        aria-label={`${t('interviews.remark')}: ${lang === 'en' ? item.en : item.bm}`}
+                        value={entry.remark || ''}
+                        onChange={(e) => setCheck(item.key, { remark: e.target.value })}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          ))}
+
+          <div className="scorebar">
+            <div className="scorebar__total">
+              <span>{t('interviews.totalMarks')}</span>
+              <strong>{total.toFixed(1)} / 100</strong>
             </div>
-          </Card>
+            <button type="button" className="btn btn--gold btn--lg" onClick={submit} disabled={busy || overLimit}>
+              {busy ? <span className="spinner" /> : <Icon name="check" size={16} />} {myScore ? t('interviews.submitScore') : t('interviews.confirmScore')}
+            </button>
+          </div>
         </div>
 
         <div className="stack scoringgrid__side">
@@ -198,8 +225,8 @@ export default function InterviewDetail() {
               </div>
             </div>
             <Progress value={total} max={100} tone={total >= 40 ? 'teal' : 'amber'} />
-            <button type="button" className="btn btn--primary btn--block" onClick={submit} disabled={busy || overLimit}>
-              {busy && <span className="spinner spinner--light" />} {myScore ? t('interviews.submitScore') : t('interviews.confirmScore')}
+            <button type="button" className="btn btn--gold btn--lg btn--block" onClick={submit} disabled={busy || overLimit}>
+              {busy ? <span className="spinner" /> : <Icon name="check" size={16} />} {myScore ? t('interviews.submitScore') : t('interviews.confirmScore')}
             </button>
             {overLimit && <p className="field__error">{t('common.error')}: {t('interviews.max')}</p>}
           </Card>

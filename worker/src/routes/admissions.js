@@ -73,9 +73,30 @@ export const RUBRIC = {
       items: [{ key: 's6_hafazan', bm: 'Hafazan (masa: Baik <5 min / Sederhana <10 min / Lemah >10 min)', en: 'Hafazan (time: Good <5 min / Fair <10 min / Weak >10 min)', max: 10 }],
     },
   ],
+  // Not scored. Each item has a tick and a remark from the interviewer.
   checklist: [
-    { id: 7, bm: 'Perkara untuk dibaca dan difahami', en: 'Items to be read and understood' },
-    { id: 8, bm: 'Individu', en: 'Individual' },
+    {
+      id: 7,
+      bm: 'Perkara untuk dibaca dan difahami',
+      en: 'Items to be read and understood',
+      items: [
+        { key: 'c7_rules', bm: 'Undang-Undang Madrasah / Asrama', en: 'Madrasah / hostel rules' },
+        { key: 'c7_discipline', bm: 'Panduan Salah Laku Disiplin', en: 'Disciplinary misconduct guide' },
+        { key: 'c7_cooperation', bm: 'Akuan Kerjasama Dua Hala', en: 'Two-way cooperation declaration' },
+        { key: 'c7_leave', bm: 'Garis Panduan Berkaitan Dengan Cuti', en: 'Leave guidelines' },
+      ],
+    },
+    {
+      id: 8,
+      bm: 'Individu',
+      en: 'Individual',
+      items: [
+        { key: 'c8_interest', bm: 'Minat dan kemahuan', en: 'Interest and willingness' },
+        { key: 'c8_prayer', bm: 'Penjagaan solat', en: 'Observance of prayer' },
+        { key: 'c8_aurat', bm: 'Penjagaan aurat', en: 'Observance of aurat' },
+        { key: 'c8_social', bm: 'Pergaulan (luar & dalam rumah)', en: 'Social conduct (outside & at home)' },
+      ],
+    },
   ],
   passMark: 40,
 };
@@ -95,6 +116,21 @@ function computeTotal(marks) {
     total += v;
   }
   return Math.round(total * 100) / 100;
+}
+
+const CHECKLIST_KEYS = RUBRIC.checklist.flatMap((s) => s.items.map((i) => i.key));
+
+// Keeps only known checklist items: { key: { checked, remark } }, remark up to 500 characters.
+function cleanChecklist(input) {
+  const out = {};
+  if (!input || typeof input !== 'object') return out;
+  for (const key of CHECKLIST_KEYS) {
+    const v = input[key];
+    if (!v || typeof v !== 'object') continue;
+    const remark = typeof v.remark === 'string' ? v.remark.trim().slice(0, 500) : '';
+    if (v.checked || remark) out[key] = { checked: !!v.checked, remark };
+  }
+  return out;
 }
 
 admissions.get('/rubric', (c) => json({ rubric: RUBRIC }));
@@ -229,22 +265,23 @@ admissions.post('/applications/:id/schedule', requireRoles('school_admin'), asyn
     .first();
   if (!app) return bad('Not found', 404);
   const body = await readJson(c);
-  if (typeof body.scheduledAt !== 'string' || !/^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?$/.test(body.scheduledAt) || Number.isNaN(Date.parse(body.scheduledAt))) {
+  // Accepts a local date-time (YYYY-MM-DDTHH:mm) or a full ISO string (seconds, milliseconds, Z or offset).
+  if (typeof body.scheduledAt !== 'string' || !/^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:?\d{2})?)?$/.test(body.scheduledAt) || Number.isNaN(Date.parse(body.scheduledAt))) {
     return bad('Tarikh temuduga tidak sah. / A valid interview date is required.');
   }
   const assessors = Array.isArray(body.assessorIds) ? [...new Set(body.assessorIds.filter((x) => typeof x === 'string' && x))] : [];
-  if (assessors.length !== 2) {
-    return bad('Pilih dua penilai yang berbeza. / Choose two different assessors.');
+  if (assessors.length < 1 || assessors.length > 10) {
+    return bad('Pilih sekurang-kurangnya seorang penemuduga. / Choose at least one interviewer.');
   }
   const validAssessors = await c.env.DB.prepare(
     `SELECT COUNT(DISTINCT u.id) AS n FROM users u
      JOIN user_roles ur ON ur.user_id = u.id AND ur.school_id = ? AND ur.role IN ('teacher','school_admin')
        AND ur.status = 'active' AND ur.ended_at IS NULL
-     WHERE u.status = 'active' AND u.id IN (?, ?)`,
+     WHERE u.status = 'active' AND u.id IN (${assessors.map(() => '?').join(',')})`,
   )
-    .bind(auth.activeSchool, assessors[0], assessors[1])
+    .bind(auth.activeSchool, ...assessors)
     .first();
-  if ((validAssessors?.n || 0) !== 2) {
+  if ((validAssessors?.n || 0) !== assessors.length) {
     return bad('Penilai mesti guru aktif di sekolah ini. / Assessors must be active teachers at this school.');
   }
   const interviewId = id('itv');
@@ -601,7 +638,7 @@ admissions.post('/interviews/:id/score', requireRoles('teacher', 'school_admin')
   const marks = {};
   for (const key of Object.keys(ITEM_LIMITS)) marks[key] = Number(body.marks?.[key] ?? 0);
   if (body.s6_time) marks.s6_time = String(body.s6_time).slice(0, 20);
-  if (body.checklist) marks.checklist = body.checklist;
+  marks.checklist = cleanChecklist(body.checklist);
   const existing = await c.env.DB.prepare('SELECT * FROM scores WHERE interview_id = ? AND assessor_id = ?')
     .bind(interviewId, auth.user.id)
     .first();
@@ -618,7 +655,10 @@ admissions.post('/interviews/:id/score', requireRoles('teacher', 'school_admin')
     .bind(interviewId)
     .all();
   const finalMark = allScores.length ? Math.round((allScores.reduce((s, r) => s + r.total, 0) / allScores.length) * 100) / 100 : total;
-  if (allScores.length >= 2) {
+  const assessorCount = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM interview_assessors WHERE interview_id = ?')
+    .bind(interviewId)
+    .first();
+  if (allScores.length >= (assessorCount?.n || 1)) {
     await c.env.DB.prepare("UPDATE interviews SET status = 'completed' WHERE id = ?").bind(interviewId).run();
     if (finalMark < RUBRIC.passMark) {
       await notifyRoles(c.env, auth.activeSchool, ['school_admin'], {

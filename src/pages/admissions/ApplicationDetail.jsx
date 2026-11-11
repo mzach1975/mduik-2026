@@ -384,7 +384,6 @@ function ScheduleModal({ open, onClose, onSubmit, busy, teachers }) {
     setForm((f) => {
       const has = f.assessorIds.includes(id);
       if (has) return { ...f, assessorIds: f.assessorIds.filter((x) => x !== id) };
-      if (f.assessorIds.length >= 2) return f;
       return { ...f, assessorIds: [...f.assessorIds, id] };
     });
   }
@@ -400,8 +399,8 @@ function ScheduleModal({ open, onClose, onSubmit, busy, teachers }) {
           <button
             type="button"
             className="btn btn--primary"
-            disabled={busy || !form.scheduledAt}
-            onClick={() => onSubmit({ ...form, scheduledAt: new Date(form.scheduledAt).toISOString() })}
+            disabled={busy || !form.scheduledAt || form.assessorIds.length < 1}
+            onClick={() => onSubmit(form)}
           >
             {busy && <span className="spinner spinner--light" />} {t('common.save')}
           </button>
@@ -422,7 +421,7 @@ function ScheduleModal({ open, onClose, onSubmit, busy, teachers }) {
           <Input value={form.location} onChange={(e) => set('location', e.target.value)} />
         </Field>
       </div>
-      <Field label={t('applications.assessors')} hint={t('interviews.bothRequired')}>
+      <Field label={t('applications.assessors')} hint={t('interviews.minOneAssessor')} required>
         <div className="assessorlist">
           {!teachers.length && <p className="muted">{t('common.noData')}</p>}
           {teachers.map((teacher) => (

@@ -1,5 +1,7 @@
 import { id, nowIso } from './util.js';
 
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
+
 /**
  * Create a portal notification and attempt transactional email through the
  * Cloudflare Email Service binding when configured.
@@ -34,7 +36,7 @@ export async function notify(env, {
         text: body,
         html: html || `<div style="font-family:Arial,sans-serif;line-height:1.6">${body
           .split('\n')
-          .map((l) => `<p>${l}</p>`)
+          .map((l) => `<p>${escapeHtml(l)}</p>`)
           .join('')}</div>`,
       });
       await env.DB.prepare("UPDATE notifications SET email_status = 'sent' WHERE id = ?").bind(nid).run();

@@ -275,9 +275,10 @@ test('a student who withdraws keeps that school’s arrears there', async () => 
 
 test('the public application form does not create a parent', async () => {
   const t = await setup();
+  t.sql("INSERT INTO documents (id, owner_type, owner_id, filename, content_type, size, created_at) VALUES ('doc_1','application_draft','draft','ic.pdf','application/pdf',10,'x')");
   const res = await t.call('super', 'POST', '/public/applications', {
     schoolId: 'sch_a',
-    category: 'tahfiz',
+    documents: ['doc_1'],
     studentName: 'Applicant',
     dob: '2015-01-01',
     gender: 'male',

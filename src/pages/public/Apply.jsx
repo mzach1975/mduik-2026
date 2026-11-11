@@ -6,9 +6,21 @@ import { useApi } from '../../hooks';
 import Icon from '../../components/Icon';
 import { Alert, Checkbox, Field, Input, Select, Textarea } from '../../components/ui';
 
+// Applicants must be at least 7 years old; there is no maximum age.
+const MIN_AGE = 7;
+
+function ageOn(dob) {
+  const d = new Date(dob);
+  if (Number.isNaN(d.getTime())) return -1;
+  const now = new Date();
+  let age = now.getFullYear() - d.getFullYear();
+  const m = now.getMonth() - d.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+  return age;
+}
+
 const EMPTY = {
   schoolId: '',
-  category: '',
   studentName: '',
   ic: '',
   dob: '',
@@ -45,11 +57,6 @@ export default function Apply() {
     setForm((f) => ({ ...f, language: lang }));
   }, [lang]);
 
-  useEffect(() => {
-    const school = schools.find((s) => s.id === form.schoolId);
-    if (school && !form.category) setForm((f) => ({ ...f, category: school.category }));
-  }, [schools, form.schoolId, form.category]);
-
   const selectedSchool = useMemo(() => schools.find((s) => s.id === form.schoolId), [schools, form.schoolId]);
 
   function set(name, value) {
@@ -62,13 +69,11 @@ export default function Apply() {
     const emailOk = (v) => !v || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
     if (which === 0) {
       if (!form.schoolId) next.schoolId = t('common.requiredField');
-      if (!form.category) next.category = t('common.requiredField');
       if (!form.studentName.trim()) next.studentName = t('common.requiredField');
       if (!form.dob) next.dob = t('common.requiredField');
       if (!form.gender) next.gender = t('common.requiredField');
       if (form.dob) {
-        const age = Math.floor((Date.now() - new Date(form.dob).getTime()) / (365.25 * 86400000));
-        if (age < 4 || age > 25) next.dob = t('apply.ageError');
+        if (ageOn(form.dob) < MIN_AGE) next.dob = t('apply.ageError');
       }
       const ic = form.ic.toUpperCase().replace(/[\s-]+/g, '');
       if (!ic) next.ic = t('common.requiredField');
@@ -83,6 +88,7 @@ export default function Apply() {
     if (which === 2) {
       if (!form.education.trim()) next.education = t('common.requiredField');
       if (!form.reason.trim()) next.reason = t('common.requiredField');
+      if (!documents.length) next.documents = t('apply.documentsRequired');
       if (!form.consent) next.consent = t('common.requiredField');
     }
     setErrors(next);
@@ -113,6 +119,7 @@ export default function Apply() {
         fd.append('file', file);
         const res = await api.upload('/public/documents', fd);
         setDocuments((prev) => [...prev, { id: res.id, name: res.filename, size: res.size }]);
+        setErrors((e) => ({ ...e, documents: undefined }));
       }
     } catch (err) {
       setUploadError(err.message);
@@ -219,7 +226,7 @@ export default function Apply() {
                 <span className="wizard__schoollogo"><Icon name="school" size={18} /></span>
                 <div>
                   <strong>{selectedSchool.name}</strong>
-                  <small>{t(selectedSchool.category === 'tahfiz' ? 'common.tahfiz' : 'common.islamicStudies')} · {selectedSchool.state}</small>
+                  {selectedSchool.state && <small>{selectedSchool.state}</small>}
                 </div>
               </div>
             )}
@@ -245,20 +252,13 @@ export default function Apply() {
                       ))}
                     </Select>
                   </Field>
-                  <Field label={t('apply.categoryLabel')} required error={errors.category}>
-                    <Select value={form.category} onChange={(e) => set('category', e.target.value)}>
-                      <option value="">{t('apply.selectCategory')}</option>
-                      <option value="tahfiz">{t('common.tahfiz')}</option>
-                      <option value="islamic_studies">{t('common.islamicStudies')}</option>
-                    </Select>
-                  </Field>
                   <Field label={t('apply.fullName')} required error={errors.studentName} className="formgrid__full">
                     <Input value={form.studentName} onChange={(e) => set('studentName', e.target.value)} autoComplete="name" />
                   </Field>
                   <Field label={t('apply.ic')} hint={t('students.icHint')} required error={errors.ic}>
                     <Input value={form.ic} onChange={(e) => set('ic', e.target.value)} autoComplete="off" />
                   </Field>
-                  <Field label={t('apply.dob')} required error={errors.dob}>
+                  <Field label={t('apply.dob')} hint={t('apply.ageHint')} required error={errors.dob}>
                     <Input type="date" value={form.dob} max={new Date().toISOString().slice(0, 10)} onChange={(e) => set('dob', e.target.value)} />
                   </Field>
                   <Field label={t('apply.gender')} required error={errors.gender}>
@@ -316,8 +316,9 @@ export default function Apply() {
                 <div className="formsection">
                   <div className="formsection__head">
                     <h2>{t('apply.documentsSection')}</h2>
-                    <span>{t('common.optional')}</span>
+                    <span>{t('apply.requiredBadge')}</span>
                   </div>
+                  <p className="field__label">{t('apply.documentsLabel')} <span className="field__req">*</span></p>
                   <p className="muted">{t('apply.documentsHint')}</p>
                   <div className="uploadlist">
                     {documents.map((doc) => (
@@ -335,6 +336,7 @@ export default function Apply() {
                   <button type="button" className="btn btn--outline btn--sm" onClick={() => fileRef.current?.click()} disabled={uploading || documents.length >= 10}>
                     {uploading ? <span className="spinner" /> : <Icon name="upload" size={16} />} {t('apply.addFile')}
                   </button>
+                  {errors.documents && <span className="field__error">{errors.documents}</span>}
                   {uploadError && <Alert tone="danger">{uploadError}</Alert>}
                 </div>
 
