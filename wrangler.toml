@@ -31,5 +31,9 @@ crons = ["0 18 * * *"]
 
 [vars]
 APP_NAME = "MDUIK"
-APP_URL = "https://mduik.mohdzakaria.workers.dev"
+APP_URL = "https://mduik.org"
 DEFAULT_LANGUAGE = "bm"
+
+[[routes]]
+pattern = "mduik.org"
+custom_domain = true
