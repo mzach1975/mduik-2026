@@ -31,7 +31,7 @@ export async function notify(env, {
     try {
       await env.EMAIL.send({
         to: email,
-        from: env.MAIL_FROM || 'no-reply@mduik.school',
+        from: env.MAIL_FROM || 'no_reply@mduik.org',
         subject,
         text: body,
         html: html || `<div style="font-family:Arial,sans-serif;line-height:1.6">${body

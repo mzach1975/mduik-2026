@@ -186,7 +186,7 @@ auth.post('/forgot', async (c) => {
       try {
         await c.env.EMAIL.send({
           to: user.email,
-          from: c.env.MAIL_FROM || 'no-reply@mduik.school',
+          from: c.env.MAIL_FROM || 'no_reply@mduik.org',
           subject: 'Tetapan semula kata laluan / Password reset',
           text: `Klik pautan ini untuk menetapkan semula kata laluan anda (sah 1 jam): ${link}\n\nClick this link to reset your password (valid 1 hour): ${link}`,
         });
