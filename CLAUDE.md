@@ -27,6 +27,7 @@ MDUIK School Administration System: a multi-tenant system for admissions, record
 - `document/`: SPEC.md, SRS docx, `Change_Request_2026-11-09.md`. The School Admin manual (draft v0.2) is not in the repo.
 
 ## Conventions
+- Email: Cloudflare Email Service binding `EMAIL`, sender `MAIL_FROM` (`no_reply@mduik.org`). `/api/auth/forgot` sends only if a user has that email.
 - Every school-owned query filters by `auth.activeSchool`. Super Admin (`auth.isSuper`) bypasses role checks.
 - API error messages are bilingual: `'Mesej BM. / English message.'`, returned via `bad(msg, status, extra)`; person-rule messages come from `message(code, kind)` in people.js.
 - `schema.sql` is re-applied on every deploy and must stay idempotent. Never put `ALTER TABLE` there. Add new columns to the `CREATE TABLE` (for fresh databases) and to `migrate.js` (for existing ones), and create indexes on new columns only in `migrate.js`. Destructive migrations back up to `migration_backups` first and are guarded by a `settings` marker.
@@ -69,6 +70,7 @@ MDUIK School Administration System: a multi-tenant system for admissions, record
 ## Session log
 - 2026-11-04 (`e217536`): parent service, IC lookup, `POST/PATCH/DELETE /parents`, Super-Admin-only delete/deactivate, per-school portal cards, school-scoped credit, 11 tests.
 - 2026-11-09 (`61d3554`, `4a872d8`): implemented CR 2026-11-09 end to end (backend, `migrateCr20261109`, UI, locales, forced password screen, logo `public/images/mduik.jpg`, seed, deploy backup + test step); fixed `npm test` for Node 22 in CI. Deploy `42566803089` succeeded; on production the migration ran (marker set, 34 backup rows, `fee_plans` dropped, 4 teacher memberships). 26 tests pass.
+- 2026-11-12 (`41ff9fc`, `b0fdc7c`): custom domain `mduik.org` bound (route in wrangler.toml), `APP_URL` = https://mduik.org, secret `MAIL_FROM` = `no_reply@mduik.org` (also the code fallback). Email Service verified: test mail delivered to the owner's Gmail inbox. 33 tests pass.
 
 ## Next steps
 1. Download the `d1-backup-4a872d8…` artifact from run `42566803089` and store it permanently (expires after 30 days).
