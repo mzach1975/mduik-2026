@@ -269,18 +269,21 @@ export function Pagination({ page = 1, pageCount = 1, total, pageSize, onPage })
 /* Modal                                                              */
 /* ------------------------------------------------------------------ */
 
-export function Modal({ open, onClose, title, subtitle, children, footer, size = 'md', danger = false }) {
+export function Modal({ open, onClose, title, subtitle, children, footer, size = 'md', danger = false, persistent = false }) {
   const ref = useRef(null);
   const onCloseRef = useRef(onClose);
 
+  const persistentRef = useRef(persistent);
+
   useEffect(() => {
     onCloseRef.current = onClose;
-  }, [onClose]);
+    persistentRef.current = persistent;
+  }, [onClose, persistent]);
 
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (e) => {
-      if (e.key === 'Escape') onCloseRef.current?.();
+      if (e.key === 'Escape' && !persistentRef.current) onCloseRef.current?.();
     };
     document.addEventListener('keydown', onKey);
     const prev = document.body.style.overflow;
@@ -301,7 +304,7 @@ export function Modal({ open, onClose, title, subtitle, children, footer, size =
 
   if (!open) return null;
   return (
-    <div className="modal" role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : 'Dialog'} onMouseDown={(e) => e.target === e.currentTarget && onClose?.()}>
+    <div className="modal" role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : 'Dialog'} onMouseDown={(e) => !persistent && e.target === e.currentTarget && onClose?.()}>
       <div className={`modal__panel modal__panel--${size} ${danger ? 'modal__panel--danger' : ''}`.trim()} ref={ref}>
         <div className="modal__head">
           <div>

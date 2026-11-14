@@ -282,7 +282,7 @@ admissions.post('/applications/:id/schedule', requireRoles('school_admin'), asyn
     .bind(auth.activeSchool, ...assessors)
     .first();
   if ((validAssessors?.n || 0) !== assessors.length) {
-    return bad('Penilai mesti guru aktif di sekolah ini. / Assessors must be active teachers at this school.');
+    return bad('Penilai mesti asatizah aktif di sekolah ini. / Assessors must be active asatizah at this school.');
   }
   const interviewId = id('itv');
   await c.env.DB.prepare(

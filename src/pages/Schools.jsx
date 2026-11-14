@@ -77,6 +77,8 @@ export default function Schools() {
         push(t('schools.created'));
       } else {
         await api.patch(`/schools/${modal.school.id}`, {
+          name: form.name.trim(),
+          category: form.category,
           short_name: form.shortName,
           state: form.state,
           address: form.address,
@@ -182,10 +184,11 @@ export default function Schools() {
         title={modal?.type === 'add' ? t('schools.addTitle') : t('schools.settingsTitle')}
         subtitle={modal?.type === 'add' ? t('schools.createHint') : modal?.school?.name}
         size="lg"
+        persistent
         footer={
           <>
             <button type="button" className="btn btn--ghost" onClick={() => setModal(null)}>{t('common.cancel')}</button>
-            <button type="button" className="btn btn--primary" onClick={save} disabled={busy || !form.name || !feeOk(form.monthlyFee) || !feeOk(form.registrationFee)}>
+            <button type="button" className="btn btn--primary" onClick={save} disabled={busy || !form.name.trim() || !feeOk(form.monthlyFee) || !feeOk(form.registrationFee)}>
               {busy && <span className="spinner spinner--light" />} {modal?.type === 'add' ? t('schools.createSchool') : t('common.saveChanges')}
             </button>
           </>
@@ -194,13 +197,13 @@ export default function Schools() {
         <h4 className="detaillabel">{t('schools.brandingTitle')}</h4>
         <div className="formgrid">
           <Field label={t('schools.name')} required className="formgrid__full">
-            <Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} disabled={modal?.type === 'edit'} />
+            <Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
           </Field>
           <Field label={t('schools.shortName')}>
             <Input value={form.shortName} onChange={(e) => setForm((f) => ({ ...f, shortName: e.target.value }))} />
           </Field>
           <Field label={t('common.category')} required>
-            <Select value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} disabled={modal?.type === 'edit'}>
+            <Select value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}>
               <option value="tahfiz">{t('common.tahfiz')}</option>
               <option value="islamic_studies">{t('common.islamicStudies')}</option>
             </Select>

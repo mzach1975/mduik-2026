@@ -5,7 +5,7 @@ import { audit } from '../lib/audit.js';
 import { notify } from '../lib/notify.js';
 import { registerParent } from '../lib/parents.js';
 import { registerTeacher } from '../lib/teachers.js';
-import { message } from '../lib/people.js';
+import { message, EMAIL_RE } from '../lib/people.js';
 
 const tenants = new Hono();
 tenants.use('*', authMiddleware);
@@ -38,6 +38,30 @@ const SCHOOL_FIELDS = [
 const FEE_REQUIRED =
   'Yuran bulanan lalai dan yuran pendaftaran diperlukan (RM, dua tempat perpuluhan). / Default monthly fee and registration fee amount are required (RM, two decimals).';
 
+/** Fields a School Admin may change in the school profile (CR-PR 2026-11-14 CR-3); fees, schedule and payment details stay editable. */
+const ADMIN_LOCKED = ['name', 'short_name', 'category', 'state', 'status', 'slug'];
+
+/** Whole number in [min, max], else null. */
+function intIn(value, min, max) {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= min && n <= max ? n : null;
+}
+
+/** Validates school schedule and contact values; returns a bilingual message or null. */
+function schoolProblem(v) {
+  if (v.monthly_due_day !== undefined && intIn(v.monthly_due_day, 1, 28) === null) {
+    return 'Hari akhir bayaran bulanan mesti antara 1 dan 28. / Monthly due day must be between 1 and 28.';
+  }
+  for (const k of ['reg_gen_month', 'reg_due_month']) {
+    if (v[k] !== undefined && intIn(v[k], 1, 12) === null) return 'Bulan mesti antara 1 dan 12. / Month must be between 1 and 12.';
+  }
+  for (const k of ['reg_gen_day', 'reg_due_day']) {
+    if (v[k] !== undefined && intIn(v[k], 1, 31) === null) return 'Hari mesti antara 1 dan 31. / Day must be between 1 and 31.';
+  }
+  if (v.email && !EMAIL_RE.test(String(v.email).trim())) return 'E-mel sekolah tidak sah. / School email is invalid.';
+  return null;
+}
+
 /** A required fee in sen: a whole number from 0 to RM 1,000,000.00, else null. */
 function feeCents(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -68,9 +92,27 @@ tenants.get('/schools', async (c) => {
 
 tenants.post('/schools', requireRoles('super_admin'), async (c) => {
   const body = await readJson(c);
+  body.name = String(body.name || '').trim();
   if (!body.name || !body.category) return bad('Nama dan kategori sekolah diperlukan. / School name and category are required.');
   if (!['tahfiz', 'islamic_studies'].includes(body.category)) return bad('Kategori tidak sah. / Invalid category.');
-  if (!body.adminEmail || !body.adminName) return bad('Butiran pentadbir sekolah diperlukan. / School admin details are required.');
+  if (!body.adminEmail || !String(body.adminName || '').trim()) return bad('Nama dan e-mel Pentadbir Sekolah diperlukan. / School Admin name and email are required.');
+  body.adminEmail = String(body.adminEmail).trim().toLowerCase();
+  if (!EMAIL_RE.test(body.adminEmail)) return bad('E-mel Pentadbir Sekolah tidak sah. / School Admin email is invalid.', 400, { code: 'email_invalid' });
+  if (body.adminPassword && String(body.adminPassword).length < 8) {
+    return bad('Kata laluan Pentadbir Sekolah mestilah sekurang-kurangnya 8 aksara. / School Admin password must be at least 8 characters.', 400, { code: 'password_rule' });
+  }
+  const schedule = {
+    monthly_due_day: body.monthlyDueDay ?? 7,
+    reg_gen_month: body.regGenMonth ?? 1,
+    reg_gen_day: body.regGenDay ?? 1,
+    reg_due_month: body.regDueMonth ?? 1,
+    reg_due_day: body.regDueDay ?? 31,
+    email: body.email,
+  };
+  const problem = schoolProblem(schedule);
+  if (problem) return bad(problem, 400, { code: 'invalid_school' });
+  const sameName = await c.env.DB.prepare('SELECT id FROM schools WHERE lower(name) = lower(?)').bind(body.name).first();
+  if (sameName) return bad('Sekolah dengan nama ini sudah wujud. / A school with this name already exists.', 409, { code: 'school_exists' });
   const monthlyFee = feeCents(body.monthlyFeeCents);
   const registrationFee = feeCents(body.registrationFeeCents);
   if (monthlyFee === null || registrationFee === null) return bad(FEE_REQUIRED, 400, { code: 'fees_required' });
@@ -98,11 +140,11 @@ tenants.post('/schools', requireRoles('super_admin'), async (c) => {
       body.phone || '',
       body.email || '',
       body.logoUrl || '',
-      Number(body.monthlyDueDay || 7),
-      Number(body.regGenMonth || 1),
-      Number(body.regGenDay || 1),
-      Number(body.regDueMonth || 1),
-      Number(body.regDueDay || 31),
+      Number(schedule.monthly_due_day),
+      Number(schedule.reg_gen_month),
+      Number(schedule.reg_gen_day),
+      Number(schedule.reg_due_month),
+      Number(schedule.reg_due_day),
       monthlyFee,
       registrationFee,
       body.bankName || '',
@@ -160,7 +202,7 @@ tenants.patch('/schools/:id', async (c) => {
   const updates = {};
   for (const f of SCHOOL_FIELDS) {
     if (body[f] === undefined) continue;
-    if (!auth.isSuper && ['name', 'status', 'category', 'slug'].includes(f)) continue;
+    if (!auth.isSuper && ADMIN_LOCKED.includes(f)) continue;
     updates[f] = typeof body[f] === 'number' ? body[f] : String(body[f]);
   }
   if (!Object.keys(updates).length) return bad('Tiada perubahan. / Nothing to update.');
@@ -171,9 +213,18 @@ tenants.patch('/schools/:id', async (c) => {
     if (v === null) return bad(FEE_REQUIRED, 400, { code: 'fees_required' });
     updates[f] = v;
   }
-  if (updates.monthly_due_day !== undefined) {
-    const d = Number(updates.monthly_due_day);
-    if (d < 1 || d > 28) return bad('Hari akhir bulanan mesti antara 1 dan 28. / Monthly due day must be 1–28.');
+  if (updates.name !== undefined) {
+    updates.name = updates.name.trim();
+    if (!updates.name) return bad('Nama sekolah diperlukan. / School name is required.');
+    const clash = await c.env.DB.prepare('SELECT id FROM schools WHERE lower(name) = lower(?) AND id != ?').bind(updates.name, idParam).first();
+    if (clash) return bad('Sekolah dengan nama ini sudah wujud. / A school with this name already exists.', 409, { code: 'school_exists' });
+  }
+  if (updates.category !== undefined && !['tahfiz', 'islamic_studies'].includes(updates.category)) return bad('Kategori tidak sah. / Invalid category.');
+  if (updates.status !== undefined && !['active', 'suspended'].includes(updates.status)) return bad('Status tidak sah. / Invalid status.');
+  const problem = schoolProblem(updates);
+  if (problem) return bad(problem, 400, { code: 'invalid_school' });
+  for (const k of ['monthly_due_day', 'reg_gen_month', 'reg_gen_day', 'reg_due_month', 'reg_due_day']) {
+    if (updates[k] !== undefined) updates[k] = Number(updates[k]);
   }
   const sets = Object.keys(updates).map((k) => `${k} = ?`).join(', ');
   await c.env.DB.prepare(`UPDATE schools SET ${sets}, updated_at = ? WHERE id = ?`)

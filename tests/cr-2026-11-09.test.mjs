@@ -37,7 +37,7 @@ async function signIn(t, identifier, password) {
 
 test('1. a school needs both fees, and a fee change applies only to later invoices', async () => {
   const t = await setup();
-  const base = { name: 'Sekolah C', category: 'tahfiz', adminEmail: 'c@test', adminName: 'Admin C' };
+  const base = { name: 'Sekolah C', category: 'tahfiz', adminEmail: 'c@test.my', adminName: 'Admin C' };
   const missing = await t.call('super', 'POST', '/schools', { ...base, monthlyFeeCents: 12000 });
   assert.equal(missing.status, 400);
   assert.equal(missing.data.code, 'fees_required');

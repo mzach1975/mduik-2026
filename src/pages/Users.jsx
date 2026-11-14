@@ -50,9 +50,12 @@ export default function Users() {
         title={t('users.title')}
         subtitle={t('users.subtitle')}
         actions={
-          <button type="button" className="btn btn--primary btn--sm" onClick={() => setModal({ type: 'add' })}>
-            <Icon name="plus" size={16} /> {t('users.addUser')}
-          </button>
+          // CR-PR 2026-11-14 CR-5: School Admin adds people from the Parents / Asatizah pages, not here.
+          isSuper && (
+            <button type="button" className="btn btn--primary btn--sm" onClick={() => setModal({ type: 'add' })}>
+              <Icon name="plus" size={16} /> {t('users.addUser')}
+            </button>
+          )
         }
       />
 

@@ -59,6 +59,13 @@ MDUIK School Administration System: a multi-tenant system for admissions, record
 - Status page: progress steps, "what next" per status, school contact, phone matched loosely, auto-check from the success link.
 - Interviews: one or more interviewers (max 10); completed when all have scored. Checklist of 8 items (sections 7 and 8), each with a tick and a remark.
 
+## Business rules: CR-PR 2026-11-14 (`document/CR-PR-14112026.md`)
+- PR-1: school create/update validate due day (1–28), months (1–12), days (1–31), school and admin email, admin password (≥ 8) and a unique name (409 `school_exists`). `app.onError` maps SQLite UNIQUE/CHECK/NOT NULL/FK errors to a bilingual 4xx naming the field; only other errors give "System error" (`code: system_error`).
+- PR-2: `findTeacherByIc` falls back to the teacher's login (`users.ic_hash`) and backfills `teachers.ic_hash/ic_enc/ic_masked`; the match is shown and "Add to school" adds a membership.
+- CR-1: Super Admin edits school name and category (Schools page). CR-2: the Schools modal closes only via Cancel/X (`Modal persistent`).
+- CR-3: School Admin cannot change name, short name, category, state or status (`ADMIN_LOCKED`, read-only in Settings); fees, schedule and payment details stay editable (assumption). School Admin / Super Admin can change their own login email in Account settings with the current password.
+- CR-4: interview location is a dropdown of active schools (default: this school). CR-5: "Add user" shown to Super Admin only. CR-6/7: "Teacher"/"Guru" → "Asatizah" in both locales and server messages; teacher IC label "Asatizah MyKad / Passport No.". Role keys and routes stay `teacher`.
+
 ## Decisions (CR 2026-11-09)
 - Kept the `monthly_fee_cents` / `registration_fee_cents` column names.
 - Kept the peppered SHA-256 `ic_hash` (no HMAC switch yet).
@@ -71,6 +78,7 @@ MDUIK School Administration System: a multi-tenant system for admissions, record
 - 2026-11-04 (`e217536`): parent service, IC lookup, `POST/PATCH/DELETE /parents`, Super-Admin-only delete/deactivate, per-school portal cards, school-scoped credit, 11 tests.
 - 2026-11-09 (`61d3554`, `4a872d8`): implemented CR 2026-11-09 end to end (backend, `migrateCr20261109`, UI, locales, forced password screen, logo `public/images/mduik.jpg`, seed, deploy backup + test step); fixed `npm test` for Node 22 in CI. Deploy `42566803089` succeeded; on production the migration ran (marker set, 34 backup rows, `fee_plans` dropped, 4 teacher memberships). 26 tests pass.
 - 2026-11-12 (`41ff9fc`, `b0fdc7c`): custom domain `mduik.org` bound (route in wrangler.toml), `APP_URL` = https://mduik.org, secret `MAIL_FROM` = `no_reply@mduik.org` (also the code fallback). Email Service verified: test mail delivered to the owner's Gmail inbox. 33 tests pass.
+- 2026-11-14: implemented CR-PR 2026-11-14 (PR-1, PR-2, CR-1..CR-7). Production finding: 4 of 5 teachers had no `ic_hash` (IC only on the login) — root cause of PR-2. 40 tests pass. Not yet committed/deployed.
 
 ## Next steps
 1. Download the `d1-backup-4a872d8…` artifact from run `42566803089` and store it permanently (expires after 30 days).

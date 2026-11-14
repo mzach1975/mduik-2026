@@ -377,7 +377,11 @@ export default function ApplicationDetail() {
 
 function ScheduleModal({ open, onClose, onSubmit, busy, teachers }) {
   const { t } = useI18n();
-  const [form, setForm] = useState({ scheduledAt: '', mode: 'in_person', location: '', assessorIds: [] });
+  const { user } = useAuth();
+  // CR-PR 2026-11-14 CR-4: the location is picked from the active schools; it defaults to this school.
+  const { data: schoolData } = useApi('/public/schools', { enabled: open });
+  const schools = schoolData?.schools || [];
+  const [form, setForm] = useState({ scheduledAt: '', mode: 'in_person', location: user?.school?.name || '', assessorIds: [] });
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
   function toggle(id) {
@@ -418,7 +422,13 @@ function ScheduleModal({ open, onClose, onSubmit, busy, teachers }) {
           </Select>
         </Field>
         <Field label={t('applications.location')}>
-          <Input value={form.location} onChange={(e) => set('location', e.target.value)} />
+          <Select value={form.location} onChange={(e) => set('location', e.target.value)}>
+            <option value="">{t('applications.selectLocation')}</option>
+            {form.location && !schools.some((s) => s.name === form.location) && <option value={form.location}>{form.location}</option>}
+            {schools.map((s) => (
+              <option key={s.id} value={s.name}>{s.name}</option>
+            ))}
+          </Select>
         </Field>
       </div>
       <Field label={t('applications.assessors')} hint={t('interviews.minOneAssessor')} required>

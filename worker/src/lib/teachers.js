@@ -1,4 +1,4 @@
-import { id, nowIso, normalizeIc, validIc } from './util.js';
+import { id, nowIso, normalizeIc, validIc, maskIc } from './util.js';
 import { encryptIc, hashIc } from './auth.js';
 import {
   normalizePhone,
@@ -21,10 +21,29 @@ export function publicTeacher(t) {
   return rest;
 }
 
+/**
+ * Teacher by IC / Passport No. Teachers created before the IC was mandatory
+ * have no ic_hash on the teacher row but their login holds it, so the login is
+ * the fallback (CR-PR 2026-11-14 PR-2); the teacher row is then backfilled so
+ * the next search finds it directly.
+ */
 export async function findTeacherByIc(env, ic) {
   if (!validIc(ic)) return null;
   const hash = await hashIc(env, ic);
-  return env.DB.prepare('SELECT * FROM teachers WHERE ic_hash = ?').bind(hash).first();
+  const direct = await env.DB.prepare('SELECT * FROM teachers WHERE ic_hash = ?').bind(hash).first();
+  if (direct) return direct;
+  const viaLogin = await env.DB.prepare(
+    `SELECT t.* FROM teachers t JOIN users u ON u.id = t.user_id
+     WHERE u.ic_hash = ? AND t.ic_hash IS NULL ORDER BY t.created_at LIMIT 1`,
+  )
+    .bind(hash)
+    .first();
+  if (!viaLogin) return null;
+  const { enc } = await encryptIc(env, ic);
+  await env.DB.prepare('UPDATE teachers SET ic_hash = ?, ic_enc = COALESCE(ic_enc, ?), ic_masked = ? WHERE id = ? AND ic_hash IS NULL')
+    .bind(hash, enc, maskIc(ic), viaLogin.id)
+    .run();
+  return { ...viaLogin, ic_hash: hash, ic_masked: maskIc(ic) };
 }
 
 export async function membership(env, teacherId, schoolId) {

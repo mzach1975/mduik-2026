@@ -449,7 +449,7 @@ records.patch('/teachers/:id', requireRoles('school_admin'), async (c) => {
     if (!validIc(body.ic)) return bad(message('ic_invalid'), 400, { code: 'ic_invalid' });
     const ic = await encryptIc(c.env, body.ic);
     const other = await c.env.DB.prepare('SELECT id FROM teachers WHERE ic_hash = ? AND id != ?').bind(ic.hash, teacher.id).first();
-    if (other) return bad('No. IC / Pasport ini milik rekod guru lain. / This IC / Passport No. belongs to another teacher record.', 409);
+    if (other) return bad('No. IC / Pasport ini milik rekod asatizah lain. / This IC / Passport No. belongs to another asatizah record.', 409);
     Object.assign(updates, { ic_hash: ic.hash, ic_enc: ic.enc, ic_masked: ic.masked });
   }
   const status = ['active', 'inactive'].includes(body.status) ? body.status : null;

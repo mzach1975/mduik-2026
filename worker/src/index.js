@@ -71,9 +71,30 @@ app.notFound((c) => {
 });
 
 app.onError((err, c) => {
-  console.error('Unhandled error', err?.stack || err);
-  return json({ error: 'Ralat sistem. Sila cuba lagi. / System error. Please try again.' }, 500);
+  console.error('Unhandled error', c.req.method, c.req.path, err?.stack || err);
+  const known = constraintError(err);
+  if (known) return json(known.body, known.status);
+  return json({ error: 'Ralat sistem. Sila cuba lagi. / System error. Please try again.', code: 'system_error' }, 500);
 });
+
+/** Maps a database constraint failure to a meaningful bilingual message (CR-PR 2026-11-14 PR-1). */
+function constraintError(err) {
+  const msg = String(err?.message || err || '');
+  const col = (msg.match(/constraint failed: (?:\w+\.)?(\w+)/i) || [])[1] || '';
+  if (/UNIQUE constraint failed/i.test(msg)) {
+    return { status: 409, body: { error: `Rekod dengan nilai yang sama sudah wujud (${col}). / A record with the same value already exists (${col}).`, code: 'duplicate', field: col } };
+  }
+  if (/CHECK constraint failed/i.test(msg)) {
+    return { status: 400, body: { error: `Nilai tidak sah untuk medan ${col}. / Invalid value for field ${col}.`, code: 'invalid_value', field: col } };
+  }
+  if (/NOT NULL constraint failed/i.test(msg)) {
+    return { status: 400, body: { error: `Medan wajib tiada: ${col}. / Required field missing: ${col}.`, code: 'required', field: col } };
+  }
+  if (/FOREIGN KEY constraint failed/i.test(msg)) {
+    return { status: 400, body: { error: 'Rekod berkaitan tidak dijumpai. / A related record was not found.', code: 'invalid_reference' } };
+  }
+  return null;
+}
 
 async function scheduled(event, env, ctx) {
   ctx.waitUntil(

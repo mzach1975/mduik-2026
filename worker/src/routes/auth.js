@@ -19,6 +19,7 @@ import { getCookie } from 'hono/cookie';
 import { resolveAuth } from '../lib/auth.js';
 import { id, nowIso, readJson, bad, json, normalizeIc, validIc } from '../lib/util.js';
 import { audit } from '../lib/audit.js';
+import { EMAIL_RE } from '../lib/people.js';
 
 const auth = new Hono();
 
@@ -127,15 +128,29 @@ auth.patch('/profile', async (c) => {
   if (body.language === 'bm' || body.language === 'en') allowed.language = body.language;
   if (body.fullName) allowed.full_name = String(body.fullName).slice(0, 120);
   if (body.phone !== undefined) allowed.phone = String(body.phone).slice(0, 40);
+  // School Admin and Super Admin may change their own login email (current password required).
+  // Parent and teacher emails belong to their person records and are changed there.
+  const newEmail = body.email === undefined ? null : String(body.email).trim().toLowerCase();
+  if (newEmail !== null && newEmail !== String(session.user.email || '').toLowerCase()) {
+    const isAdmin = session.isSuper || session.roles.some((r) => r.role === 'school_admin');
+    if (!isAdmin) return bad('Hanya pentadbir boleh menukar e-mel log masuk di sini. / Only administrators can change their login email here.', 403);
+    if (!EMAIL_RE.test(newEmail)) return bad('Alamat e-mel tidak sah. / Invalid email address.', 400, { code: 'email_invalid' });
+    if (!(await verifyUserPassword(c.env, session.user, String(body.currentPassword || '')))) {
+      return bad('Kata laluan semasa diperlukan untuk menukar e-mel. / Your current password is required to change your email.', 400, { code: 'password_required' });
+    }
+    const taken = await c.env.DB.prepare('SELECT id FROM users WHERE lower(email) = ? AND id != ?').bind(newEmail, session.user.id).first();
+    if (taken) return bad('E-mel ini sudah digunakan oleh akaun lain. / This email is already used by another account.', 409, { code: 'login_email_taken' });
+    allowed.email = newEmail;
+  }
   if (!Object.keys(allowed).length) return bad('Tiada perubahan. / Nothing to update.');
   const sets = Object.keys(allowed).map((k) => `${k} = ?`).join(', ');
-  const before = { full_name: session.user.full_name, language: session.user.language, phone: session.user.phone };
+  const before = { full_name: session.user.full_name, language: session.user.language, phone: session.user.phone, email: session.user.email };
   await c.env.DB.prepare(`UPDATE users SET ${sets} WHERE id = ?`)
     .bind(...Object.values(allowed), session.user.id)
     .run();
   await audit(c, 'update', 'user_profile', session.user.id, { before, after: allowed });
   const updated = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(session.user.id).first();
-  return json({ user: { ...publicUser(session), language: updated.language, name: updated.full_name } });
+  return json({ user: { ...publicUser(session), language: updated.language, name: updated.full_name, email: updated.email } });
 });
 
 auth.post('/change-password', async (c) => {

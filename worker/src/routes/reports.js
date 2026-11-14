@@ -135,7 +135,7 @@ reports.get('/:id', async (c) => {
       .bind(schoolId)
       .all();
     def = {
-      title: 'Teacher records / Rekod guru',
+      title: 'Asatizah records / Rekod asatizah',
       columns: [
         { key: 'full_name', label: 'Teacher' },
         { key: 'ic_masked', label: 'IC / Passport No.' },
@@ -156,7 +156,7 @@ reports.get('/:id', async (c) => {
       .bind(schoolId)
       .all();
     def = {
-      title: 'Teacher-school assignments / Penugasan guru',
+      title: 'Asatizah-school assignments / Penugasan asatizah',
       columns: [
         { key: 'full_name', label: 'Teacher' },
         { key: 'school_name', label: 'School' },

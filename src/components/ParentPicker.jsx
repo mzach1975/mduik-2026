@@ -63,6 +63,7 @@ export default function ParentPicker({ value, onChange, kind = 'parent' }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const set = (patch) => onChange((p) => ({ ...p, ...patch }));
+  const ns = kind === 'teacher' ? 'teachers' : 'parentRecord';
 
   async function search() {
     setBusy(true);
@@ -82,7 +83,7 @@ export default function ParentPicker({ value, onChange, kind = 'parent' }) {
   return (
     <div className="parentpicker">
       <div className="parentpicker__search">
-        <Field label={t('parentRecord.icLabel')} hint={t('parentRecord.icHint')} error={error} required>
+        <Field label={t(`${ns}.icLabel`)} hint={t('parentRecord.icHint')} error={error} required>
           <Input
             value={value.ic}
             autoComplete="off"
@@ -102,7 +103,7 @@ export default function ParentPicker({ value, onChange, kind = 'parent' }) {
 
       {value.searched && value.match && (
         <div className="parentpicker__match">
-          <Alert tone="success" title={t('parentRecord.matchTitle')}>{t(kind === 'teacher' ? 'teachers.matchHint' : 'parentRecord.matchHint')}</Alert>
+          <Alert tone="success" title={t(`${ns}.matchTitle`)}>{t(kind === 'teacher' ? 'teachers.matchHint' : 'parentRecord.matchHint')}</Alert>
           <KeyValue
             items={[
               { label: t('common.name'), value: value.match.full_name },
@@ -121,7 +122,7 @@ export default function ParentPicker({ value, onChange, kind = 'parent' }) {
 
       {value.searched && !value.match && !value.parentId && (
         <>
-          <Alert tone="info" title={t('parentRecord.noMatchTitle')}>{t('parentRecord.noMatchHint')}</Alert>
+          <Alert tone="info" title={t(`${ns}.noMatchTitle`)}>{t(`${ns}.noMatchHint`)}</Alert>
           <div className="formgrid">
             <Field label={t('common.name')} required>
               <Input value={value.name} onChange={(e) => set({ name: e.target.value, duplicates: null })} />

@@ -79,6 +79,7 @@ function SchoolSettings() {
     });
   }, [data]);
 
+  const locked = !user?.isSuper;
   if (!form) return <Loading />;
   if (!data?.school) {
     return (
@@ -94,10 +95,8 @@ function SchoolSettings() {
     setBusy(true);
     try {
       await api.patch(`/schools/${user.activeSchool}`, {
-        name: form.name,
-        short_name: form.short_name,
-        category: form.category,
-        state: form.state,
+        // Name, short name, category and state are read-only for School Admin (CR-PR 2026-11-14 CR-3).
+        ...(user.isSuper ? { name: form.name, short_name: form.short_name, category: form.category, state: form.state, status: form.status } : {}),
         address: form.address,
         phone: form.phone,
         email: form.email,
@@ -111,7 +110,6 @@ function SchoolSettings() {
         payment_instructions_en: form.payment_instructions_en,
         invoice_prefix: form.invoice_prefix,
         receipt_prefix: form.receipt_prefix,
-        status: form.status,
       });
       push(t('settings.schoolSaved'));
       await reload(true);
@@ -130,15 +128,15 @@ function SchoolSettings() {
     >
       <h4 className="detaillabel">{t('schools.brandingTitle')}</h4>
       <div className="formgrid">
-        <Field label={t('schools.name')} required><Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></Field>
-        <Field label={t('schools.shortName')}><Input value={form.short_name} onChange={(e) => setForm((f) => ({ ...f, short_name: e.target.value }))} /></Field>
+        <Field label={t('schools.name')} required hint={locked ? t('settings.readOnlyHint') : undefined}><Input value={form.name} readOnly={locked} disabled={locked} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></Field>
+        <Field label={t('schools.shortName')}><Input value={form.short_name} readOnly={locked} disabled={locked} onChange={(e) => setForm((f) => ({ ...f, short_name: e.target.value }))} /></Field>
         <Field label={t('common.category')}>
-          <Select value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}>
+          <Select value={form.category} disabled={locked} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}>
             <option value="tahfiz">{t('common.tahfiz')}</option>
             <option value="islamic_studies">{t('common.islamicStudies')}</option>
           </Select>
         </Field>
-        <Field label={t('common.state')}><Input value={form.state} onChange={(e) => setForm((f) => ({ ...f, state: e.target.value }))} /></Field>
+        <Field label={t('common.state')}><Input value={form.state} readOnly={locked} disabled={locked} onChange={(e) => setForm((f) => ({ ...f, state: e.target.value }))} /></Field>
         <Field label={t('common.phone')}><Input value={form.phone} onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} /></Field>
         <Field label={t('common.email')}><Input type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} /></Field>
         <Field label={t('common.address')} className="formgrid__full"><Textarea rows={2} value={form.address} onChange={(e) => setForm((f) => ({ ...f, address: e.target.value }))} /></Field>
@@ -172,7 +170,9 @@ function AccountSettings({ lang, setLang, patchUser, push }) {
   const { t } = useI18n();
   const { user } = useAuth();
   const { push: toast } = useToast();
-  const [profile, setProfile] = useState({ fullName: user?.name || '', phone: '', language: user?.language || lang });
+  const canEmail = user?.isSuper || user?.schools?.some((s) => s.role === 'school_admin');
+  const [profile, setProfile] = useState({ fullName: user?.name || '', phone: '', language: user?.language || lang, email: user?.email || '', currentPassword: '' });
+  const emailChanged = canEmail && profile.email.trim().toLowerCase() !== String(user?.email || '').toLowerCase();
   const [passwords, setPasswords] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
   const [busy, setBusy] = useState(false);
   const [pwBusy, setPwBusy] = useState(false);
@@ -184,8 +184,10 @@ function AccountSettings({ lang, setLang, patchUser, push }) {
         fullName: profile.fullName,
         phone: profile.phone,
         language: profile.language,
+        ...(emailChanged ? { email: profile.email.trim(), currentPassword: profile.currentPassword } : {}),
       });
-      patchUser({ name: res.user.name, language: res.user.language });
+      patchUser({ name: res.user.name, language: res.user.language, email: res.user.email });
+      setProfile((p) => ({ ...p, email: res.user.email, currentPassword: '' }));
       setLang(profile.language);
       toast(t('settings.profileUpdated'));
     } catch (err) {
@@ -228,7 +230,10 @@ function AccountSettings({ lang, setLang, patchUser, push }) {
         </div>
         <div className="formgrid">
           <Field label={t('common.name')}><Input value={profile.fullName} onChange={(e) => setProfile((p) => ({ ...p, fullName: e.target.value }))} /></Field>
-          <Field label={t('common.email')}><Input value={user?.email || ''} disabled /></Field>
+          <Field label={t('common.email')} hint={canEmail ? t('settings.emailHint') : undefined}><Input type="email" value={canEmail ? profile.email : user?.email || ''} disabled={!canEmail} onChange={(e) => setProfile((p) => ({ ...p, email: e.target.value }))} /></Field>
+          {emailChanged && (
+            <Field label={t('auth.currentPassword')} required><Input type="password" value={profile.currentPassword} onChange={(e) => setProfile((p) => ({ ...p, currentPassword: e.target.value }))} /></Field>
+          )}
           <Field label={t('common.phone')}><Input value={profile.phone} onChange={(e) => setProfile((p) => ({ ...p, phone: e.target.value }))} placeholder="+60" /></Field>
           <Field label={t('settings.preferredLanguage')}>
             <Select value={profile.language} onChange={(e) => setProfile((p) => ({ ...p, language: e.target.value }))}>
@@ -237,7 +242,7 @@ function AccountSettings({ lang, setLang, patchUser, push }) {
             </Select>
           </Field>
         </div>
-        <button type="button" className="btn btn--primary btn--sm" onClick={saveProfile} disabled={busy}>
+        <button type="button" className="btn btn--primary btn--sm" onClick={saveProfile} disabled={busy || (emailChanged && !profile.currentPassword)}>
           {busy && <span className="spinner spinner--light" />} {t('settings.saveProfile')}
         </button>
       </Card>
