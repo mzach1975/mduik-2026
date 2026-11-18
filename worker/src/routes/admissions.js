@@ -282,7 +282,7 @@ admissions.post('/applications/:id/schedule', requireRoles('school_admin'), asyn
     .bind(auth.activeSchool, ...assessors)
     .first();
   if ((validAssessors?.n || 0) !== assessors.length) {
-    return bad('Penilai mesti asatizah aktif di sekolah ini. / Assessors must be active asatizah at this school.');
+    return bad('Penilai mesti asatizah aktif di madrasah ini. / Assessors must be active asatizah at this madrasah.');
   }
   const interviewId = id('itv');
   await c.env.DB.prepare(
@@ -319,7 +319,7 @@ admissions.post('/applications/:id/schedule', requireRoles('school_admin'), asyn
     body:
       app.language === 'en'
         ? `Your interview for application ${app.reference} is scheduled on ${when}. Location: ${body.location || 'School office'}.`
-        : `Temuduga untuk permohonan ${app.reference} dijadualkan pada ${when}. Lokasi: ${body.location || 'Pejabat sekolah'}.`,
+        : `Temuduga untuk permohonan ${app.reference} dijadualkan pada ${when}. Lokasi: ${body.location || 'Pejabat madrasah'}.`,
     language: app.language,
   });
   for (const assessorId of assessors) {

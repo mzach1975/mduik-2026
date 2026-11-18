@@ -111,9 +111,6 @@ export default function ChildDetail() {
 
           <Card title={t('portal.contactTitle')}>
             <p className="muted">{t('portal.contactSchool')}</p>
-            <Link to="/app/portal" className="cardlink">
-              {t('portal.updateContact')} <Icon name="arrowRight" size={14} />
-            </Link>
           </Card>
         </div>
       </div>

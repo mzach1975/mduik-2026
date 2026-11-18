@@ -704,7 +704,7 @@ function documentResponse(body, doc) {
 
 admin.post('/documents', requireRoles('school_admin', 'bursar'), async (c) => {
   const auth = c.get('auth');
-  if (!auth.activeSchool) return bad('Pilih sekolah dahulu. / Select a school first.');
+  if (!auth.activeSchool) return bad('Pilih madrasah dahulu. / Select a madrasah first.');
   let form;
   try {
     form = await c.req.formData();

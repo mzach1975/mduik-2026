@@ -475,7 +475,7 @@ finance.post('/reminders/:id/release', requireRoles('school_admin', 'bursar'), a
     schoolId: auth.activeSchool,
     type: 'arrears_reminder',
     subject: `Notis rasmi / Formal notice — ${reminder.invoice_number}`,
-    body: `Notis rasmi: invois ${reminder.invoice_number} sebanyak RM ${(outstanding / 100).toFixed(2)} masih belum dibayar sejak ${reminder.due_date}. Sila hubungi pihak sekolah segera.\nFormal notice: invoice ${reminder.invoice_number} for RM ${(outstanding / 100).toFixed(2)} remains unpaid since ${reminder.due_date}. Please contact the school immediately.`,
+    body: `Notis rasmi: invois ${reminder.invoice_number} sebanyak RM ${(outstanding / 100).toFixed(2)} masih belum dibayar sejak ${reminder.due_date}. Sila hubungi pihak madrasah segera.\nFormal notice: invoice ${reminder.invoice_number} for RM ${(outstanding / 100).toFixed(2)} remains unpaid since ${reminder.due_date}. Please contact the madrasah immediately.`,
     language: 'bm',
   });
   await audit(c, 'release', 'reminder', reminder.id, { after: { stage: reminder.stage } });

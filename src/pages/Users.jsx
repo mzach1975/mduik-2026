@@ -185,6 +185,8 @@ function UserModal({ modal, onClose, onSaved }) {
 
   // Parents and teachers: IC / Passport No. is required and the first password is the IC.
   const isPerson = !isEdit && ['parent', 'teacher'].includes(form.role);
+  // A Super Admin account has no madrasah and needs a typed password (CR-PR 2026-11-17 CR-3).
+  const isSuperRole = !isEdit && form.role === 'super_admin';
 
   async function save() {
     setBusy(true);
@@ -209,7 +211,7 @@ function UserModal({ modal, onClose, onSaved }) {
           password: isPerson ? undefined : form.password,
           language: form.language,
           role: form.role,
-          schoolId: form.schoolId,
+          schoolId: isSuperRole ? undefined : form.schoolId,
           studentIds: form.role === 'parent' ? studentIds : undefined,
           parentId: form.role === 'parent' ? dup?.parentId || undefined : undefined,
           teacherId: form.role === 'teacher' ? dup?.parentId || undefined : undefined,
@@ -247,7 +249,7 @@ function UserModal({ modal, onClose, onSaved }) {
   const dupPending = dup && !dup.parentId && !(dup.createAnyway && dup.reason.trim().length >= 5);
   const canSubmit = isEdit
     ? form.fullName?.length > 0
-    : form.fullName?.length > 0 && /\S+@\S+\.\S+/.test(form.email || '') && (isSuper ? form.schoolId : true) && !dupPending && (!isPerson || (String(form.ic || '').trim() && String(form.phone || '').trim()));
+    : form.fullName?.length > 0 && /\S+@\S+\.\S+/.test(form.email || '') && (isSuperRole ? String(form.password || '').length >= 8 : isSuper ? form.schoolId : true) && !dupPending && (!isPerson || (String(form.ic || '').trim() && String(form.phone || '').trim()));
 
   return (
     <>
@@ -288,17 +290,18 @@ function UserModal({ modal, onClose, onSaved }) {
                       {(isSuper ? ROLES : ROLES.filter((r) => r !== 'school_admin')).map((r) => (
                         <option key={r} value={r}>{t(`users.${r === 'school_admin' ? 'schoolAdmin' : r}`)}</option>
                       ))}
+                      {isSuper && <option value="super_admin">{t('users.superAdmin')}</option>}
                     </Select>
                   </Field>
-                  <Field label={t('users.school')} required={isSuper}>
+                  {!isSuperRole && <Field label={t('users.school')} required={isSuper}>
                     <Select value={form.schoolId} onChange={(e) => setForm((f) => ({ ...f, schoolId: e.target.value }))} disabled={!isSuper}>
                       {!isSuper && <option value={user?.activeSchool}>{user?.school?.name || '—'}</option>}
                       {isSuper && <option value="">{t('common.select')}</option>}
                       {isSuper && schools.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                     </Select>
-                  </Field>
+                  </Field>}
                 </div>
-                <p className="muted smalltext">{t('users.permissions')}</p>
+                <p className="muted smalltext">{isSuperRole ? t('users.superAdminHint') : t('users.permissions')}</p>
               </>
             )}
 
@@ -320,7 +323,7 @@ function UserModal({ modal, onClose, onSaved }) {
                   {isPerson ? (
                     <Alert tone="info">{t('users.firstPasswordIsIc')}</Alert>
                   ) : (
-                    <Field label={t('auth.password')} hint={t('users.passwordHint')}>
+                    <Field label={t('auth.password')} hint={isSuperRole ? t('users.superPasswordHint') : t('users.passwordHint')} required={isSuperRole}>
                       <Input type="text" value={form.password || ''} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="Mduik@2026" />
                     </Field>
                   )}

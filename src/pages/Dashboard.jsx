@@ -376,8 +376,7 @@ function ParentDashboard({ data }) {
   return (
     <>
       <PageHeader
-        title={`${t('dashboard.welcome')}, ${user.name.split(' ')[0]}`}
-        subtitle={t('dashboard.children')}
+        title={t('dashboard.children')}
         actions={<Link to="/app/portal" className="btn btn--primary btn--sm">{t('landing.parentPortal')} <Icon name="arrowRight" size={15} /></Link>}
       />
       {!children.length ? (

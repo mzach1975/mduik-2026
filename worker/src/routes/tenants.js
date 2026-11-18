@@ -58,7 +58,7 @@ function schoolProblem(v) {
   for (const k of ['reg_gen_day', 'reg_due_day']) {
     if (v[k] !== undefined && intIn(v[k], 1, 31) === null) return 'Hari mesti antara 1 dan 31. / Day must be between 1 and 31.';
   }
-  if (v.email && !EMAIL_RE.test(String(v.email).trim())) return 'E-mel sekolah tidak sah. / School email is invalid.';
+  if (v.email && !EMAIL_RE.test(String(v.email).trim())) return 'E-mel madrasah tidak sah. / Madrasah email is invalid.';
   return null;
 }
 
@@ -93,13 +93,13 @@ tenants.get('/schools', async (c) => {
 tenants.post('/schools', requireRoles('super_admin'), async (c) => {
   const body = await readJson(c);
   body.name = String(body.name || '').trim();
-  if (!body.name || !body.category) return bad('Nama dan kategori sekolah diperlukan. / School name and category are required.');
+  if (!body.name || !body.category) return bad('Nama dan kategori madrasah diperlukan. / Madrasah name and category are required.');
   if (!['tahfiz', 'islamic_studies'].includes(body.category)) return bad('Kategori tidak sah. / Invalid category.');
-  if (!body.adminEmail || !String(body.adminName || '').trim()) return bad('Nama dan e-mel Pentadbir Sekolah diperlukan. / School Admin name and email are required.');
+  if (!body.adminEmail || !String(body.adminName || '').trim()) return bad('Nama dan e-mel Pentadbir Madrasah diperlukan. / Madrasah Admin name and email are required.');
   body.adminEmail = String(body.adminEmail).trim().toLowerCase();
-  if (!EMAIL_RE.test(body.adminEmail)) return bad('E-mel Pentadbir Sekolah tidak sah. / School Admin email is invalid.', 400, { code: 'email_invalid' });
+  if (!EMAIL_RE.test(body.adminEmail)) return bad('E-mel Pentadbir Madrasah tidak sah. / Madrasah Admin email is invalid.', 400, { code: 'email_invalid' });
   if (body.adminPassword && String(body.adminPassword).length < 8) {
-    return bad('Kata laluan Pentadbir Sekolah mestilah sekurang-kurangnya 8 aksara. / School Admin password must be at least 8 characters.', 400, { code: 'password_rule' });
+    return bad('Kata laluan Pentadbir Madrasah mestilah sekurang-kurangnya 8 aksara. / Madrasah Admin password must be at least 8 characters.', 400, { code: 'password_rule' });
   }
   const schedule = {
     monthly_due_day: body.monthlyDueDay ?? 7,
@@ -112,7 +112,7 @@ tenants.post('/schools', requireRoles('super_admin'), async (c) => {
   const problem = schoolProblem(schedule);
   if (problem) return bad(problem, 400, { code: 'invalid_school' });
   const sameName = await c.env.DB.prepare('SELECT id FROM schools WHERE lower(name) = lower(?)').bind(body.name).first();
-  if (sameName) return bad('Sekolah dengan nama ini sudah wujud. / A school with this name already exists.', 409, { code: 'school_exists' });
+  if (sameName) return bad('Madrasah dengan nama ini sudah wujud. / A madrasah with this name already exists.', 409, { code: 'school_exists' });
   const monthlyFee = feeCents(body.monthlyFeeCents);
   const registrationFee = feeCents(body.registrationFeeCents);
   if (monthlyFee === null || registrationFee === null) return bad(FEE_REQUIRED, 400, { code: 'fees_required' });
@@ -149,8 +149,8 @@ tenants.post('/schools', requireRoles('super_admin'), async (c) => {
       registrationFee,
       body.bankName || '',
       body.bankAccount || '',
-      body.paymentInstructionsBm || 'Sila buat pindahan bank ke akaun sekolah dan muat naik bukti pembayaran di portal.',
-      body.paymentInstructionsEn || 'Please bank transfer to the school account and upload proof of payment in the portal.',
+      body.paymentInstructionsBm || 'Sila buat pindahan bank ke akaun madrasah dan muat naik bukti pembayaran di portal.',
+      body.paymentInstructionsEn || 'Please bank transfer to the madrasah account and upload proof of payment in the portal.',
       body.invoicePrefix || 'INV',
       body.receiptPrefix || 'RCP',
       'active',
@@ -174,7 +174,7 @@ tenants.post('/schools', requireRoles('super_admin'), async (c) => {
       email: adminUser.email,
       name: adminUser.full_name,
       type: 'account_created',
-      subject: 'Akaun Pentadbir Sekolah / School Admin account',
+      subject: 'Akaun Pentadbir Madrasah / Madrasah Admin account',
       body: `Akaun anda untuk ${body.name} telah dicipta. Log masuk di ${c.env.APP_URL || new URL(c.req.url).origin}.\nYour account for ${body.name} has been created. Sign in at ${c.env.APP_URL || new URL(c.req.url).origin}.`,
       language: 'bm',
     });
@@ -197,7 +197,7 @@ tenants.patch('/schools/:id', async (c) => {
   if (!auth.isSuper && auth.activeSchool !== idParam) return bad('Forbidden', 403);
   if (!auth.isSuper && auth.roleInSchool !== 'school_admin') return bad('Forbidden', 403);
   const existing = await c.env.DB.prepare('SELECT * FROM schools WHERE id = ?').bind(idParam).first();
-  if (!existing) return bad('Sekolah tidak dijumpai. / School not found.', 404);
+  if (!existing) return bad('Madrasah tidak dijumpai. / Madrasah not found.', 404);
   const body = await readJson(c);
   const updates = {};
   for (const f of SCHOOL_FIELDS) {
@@ -215,9 +215,9 @@ tenants.patch('/schools/:id', async (c) => {
   }
   if (updates.name !== undefined) {
     updates.name = updates.name.trim();
-    if (!updates.name) return bad('Nama sekolah diperlukan. / School name is required.');
+    if (!updates.name) return bad('Nama madrasah diperlukan. / Madrasah name is required.');
     const clash = await c.env.DB.prepare('SELECT id FROM schools WHERE lower(name) = lower(?) AND id != ?').bind(updates.name, idParam).first();
-    if (clash) return bad('Sekolah dengan nama ini sudah wujud. / A school with this name already exists.', 409, { code: 'school_exists' });
+    if (clash) return bad('Madrasah dengan nama ini sudah wujud. / A madrasah with this name already exists.', 409, { code: 'school_exists' });
   }
   if (updates.category !== undefined && !['tahfiz', 'islamic_studies'].includes(updates.category)) return bad('Kategori tidak sah. / Invalid category.');
   if (updates.status !== undefined && !['active', 'suspended'].includes(updates.status)) return bad('Status tidak sah. / Invalid status.');
@@ -248,7 +248,7 @@ tenants.get('/schools/:id', async (c) => {
 
 tenants.get('/school-settings', async (c) => {
   const auth = c.get('auth');
-  if (!auth.activeSchool) return bad('Tiada konteks sekolah. / No school context.', 400);
+  if (!auth.activeSchool) return bad('Tiada konteks madrasah. / No madrasah context.', 400);
   const school = await c.env.DB.prepare('SELECT * FROM schools WHERE id = ?').bind(auth.activeSchool).first();
   return json({ school });
 });
@@ -318,12 +318,17 @@ tenants.post('/users', requireRoles('school_admin'), async (c) => {
   const auth = c.get('auth');
   const body = await readJson(c);
   const role = body.role;
-  const allowedRoles = auth.isSuper ? ['school_admin', 'bursar', 'teacher', 'parent'] : ['bursar', 'teacher', 'parent'];
+  // Only a Super Admin creates another Super Admin (CR-PR 2026-11-17 CR-3); that role has no madrasah.
+  const allowedRoles = auth.isSuper ? ['super_admin', 'school_admin', 'bursar', 'teacher', 'parent'] : ['bursar', 'teacher', 'parent'];
   if (!allowedRoles.includes(role)) return bad('Peranan tidak dibenarkan. / Role not permitted.', 403);
-  const schoolId = auth.isSuper ? body.schoolId || auth.activeSchool : auth.activeSchool;
-  if (!schoolId) return bad('Sekolah diperlukan. / School is required.');
-  if (!(await c.env.DB.prepare('SELECT 1 AS ok FROM schools WHERE id = ?').bind(schoolId).first())) {
-    return bad('Sekolah tidak dijumpai. / School not found.', 404);
+  const isSuperRole = role === 'super_admin';
+  const schoolId = isSuperRole ? null : auth.isSuper ? body.schoolId || auth.activeSchool : auth.activeSchool;
+  if (isSuperRole && String(body.password || '').length < 8) {
+    return bad('Kata laluan Super Admin mestilah sekurang-kurangnya 8 aksara. / A Super Admin password must be at least 8 characters.', 400, { code: 'password_rule' });
+  }
+  if (!isSuperRole && !schoolId) return bad('Madrasah diperlukan. / Madrasah is required.');
+  if (!isSuperRole && !(await c.env.DB.prepare('SELECT 1 AS ok FROM schools WHERE id = ?').bind(schoolId).first())) {
+    return bad('Madrasah tidak dijumpai. / Madrasah not found.', 404);
   }
   if (!body.fullName || !body.email) return bad('Nama dan e-mel diperlukan. / Name and email are required.');
   const studentIds = role === 'parent' && Array.isArray(body.studentIds)
@@ -336,7 +341,7 @@ tenants.post('/users', requireRoles('school_admin'), async (c) => {
       .bind(schoolId, ...studentIds)
       .first();
     if ((found?.n || 0) !== studentIds.length) {
-      return bad('Pelajar tidak dijumpai di sekolah ini. / One or more students are not in this school.', 400);
+      return bad('Pelajar tidak dijumpai di madrasah ini. / One or more students are not in this madrasah.', 400);
     }
   }
   // Parents and teachers follow the shared person rules: IC / Passport No.
@@ -453,7 +458,7 @@ tenants.patch('/users/:id', requireRoles('school_admin'), async (c) => {
         .bind(auth.activeSchool, userId)
         .first();
       if (!others?.n) {
-        return bad('Sekolah mesti mempunyai sekurang-kurangnya seorang pentadbir aktif. / The school must keep at least one active admin.');
+        return bad('Madrasah mesti mempunyai sekurang-kurangnya seorang pentadbir aktif. / The madrasah must keep at least one active admin.');
       }
     }
   }

@@ -21,9 +21,9 @@ test('PR-1: invalid school input returns a meaningful 4xx, never a system error'
   for (const [over, status, pattern] of [
     [{ monthlyDueDay: 30 }, 400, /Monthly due day must be between 1 and 28/],
     [{ monthlyDueDay: 0 }, 400, /Monthly due day/],
-    [{ adminEmail: 'not-an-email' }, 400, /School Admin email is invalid/],
+    [{ adminEmail: 'not-an-email' }, 400, /Madrasah Admin email is invalid/],
     [{ adminPassword: 'short' }, 400, /at least 8 characters/],
-    [{ email: 'bad@' }, 400, /School email is invalid/],
+    [{ email: 'bad@' }, 400, /Madrasah email is invalid/],
     [{ name: 'Sekolah A' }, 409, /already exists/],
     [{ regDueMonth: 13 }, 400, /Month must be between 1 and 12/],
   ]) {

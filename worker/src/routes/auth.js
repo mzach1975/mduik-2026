@@ -60,7 +60,7 @@ auth.post('/login', async (c) => {
       )
         .bind(...ids)
         .first();
-      if (!active?.n) return bad('Sekolah anda telah digantung. / Your school has been suspended.', 403);
+      if (!active?.n) return bad('Madrasah anda telah digantung. / Your madrasah has been suspended.', 403);
     }
   }
   let schoolId = body.schoolId || null;
@@ -105,10 +105,10 @@ auth.post('/context', async (c) => {
   const body = await readJson(c);
   const schoolId = body.schoolId || null;
   if (!session.isSuper && !session.roles.some((r) => r.school_id === schoolId)) {
-    return bad('Anda bukan ahli sekolah ini. / You are not a member of this school.', 403);
+    return bad('Anda bukan ahli madrasah ini. / You are not a member of this madrasah.', 403);
   }
   if (schoolId && !(await c.env.DB.prepare('SELECT 1 AS ok FROM schools WHERE id = ?').bind(schoolId).first())) {
-    return bad('Sekolah tidak dijumpai. / School not found.', 404);
+    return bad('Madrasah tidak dijumpai. / Madrasah not found.', 404);
   }
   if (session.jti) await revokeSession(c.env, session.user.id, session.jti);
   const token = await setSession(c, session.user, schoolId);

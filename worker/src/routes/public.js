@@ -24,7 +24,7 @@ pub.get('/schools/:id', async (c) => {
   )
     .bind(c.req.param('id'))
     .first();
-  if (!school) return bad('Sekolah tidak dijumpai. / School not found.', 404);
+  if (!school) return bad('Madrasah tidak dijumpai. / Madrasah not found.', 404);
   return json({ school });
 });
 
@@ -58,7 +58,7 @@ pub.post('/applications', async (c) => {
   const missing = required.filter((f) => !body[f] || String(body[f]).trim() === '');
   if (!body.consent) missing.push('consent');
   const school = await c.env.DB.prepare("SELECT * FROM schools WHERE id = ? AND status = 'active'").bind(body.schoolId).first();
-  if (!school) return bad('Sekolah tidak dijumpai. / School not found.', 404);
+  if (!school) return bad('Madrasah tidak dijumpai. / Madrasah not found.', 404);
   // The form no longer asks for a category: the school's category is used.
   const category = ['tahfiz', 'islamic_studies'].includes(school.category)
     ? school.category
@@ -153,13 +153,13 @@ pub.post('/applications', async (c) => {
             `Dear ${body.parentName},`,
             `Thank you. The application for ${body.studentName} to ${school.name} has been received and will be processed.`,
             `Reference number: ${reference}`,
-            `The school will contact you about the next step, such as an interview. You can check the status any time on ${c.env.APP_URL || ''}/status with your reference number and this email address.`,
+            `The madrasah will contact you about the next step, such as an interview. You can check the status any time on ${c.env.APP_URL || ''}/status with your reference number and this email address.`,
           ].join('\n')
         : [
             `Assalamualaikum ${body.parentName},`,
             `Terima kasih. Permohonan ${body.studentName} ke ${school.name} telah diterima dan akan diproses.`,
             `Nombor rujukan: ${reference}`,
-            `Pihak sekolah akan menghubungi anda tentang langkah seterusnya, seperti temuduga. Semak status pada bila-bila masa di ${c.env.APP_URL || ''}/status dengan nombor rujukan dan alamat e-mel ini.`,
+            `Pihak madrasah akan menghubungi anda tentang langkah seterusnya, seperti temuduga. Semak status pada bila-bila masa di ${c.env.APP_URL || ''}/status dengan nombor rujukan dan alamat e-mel ini.`,
           ].join('\n'),
     language: lang,
   });

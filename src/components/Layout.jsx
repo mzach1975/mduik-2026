@@ -159,7 +159,9 @@ export default function Layout() {
   }, [reloadNotif]);
 
   const schools = user?.isSuper ? schoolData?.schools || [] : user?.schools || [];
-  const showSwitcher = user?.isSuper || schools.length > 1;
+  const isParent = user?.role === 'parent';
+  // Parents see all linked children across madrasahs at once, so they get no madrasah switcher (CR-PR 2026-11-17).
+  const showSwitcher = !isParent && (user?.isSuper || schools.length > 1);
 
   async function handleSchool(e) {
     const value = e.target.value || null;
@@ -220,13 +222,13 @@ export default function Layout() {
         </nav>
 
         <div className="sidebar__foot">
-          <div className="sidebar__school">
+          {!isParent && <div className="sidebar__school">
             <Icon name="school" size={16} />
             <div>
               <strong>{user.school?.name || (user.isSuper ? t('schools.stateLevel') : '—')}</strong>
               <span>{user.school?.category ? t(`common.${user.school.category === 'tahfiz' ? 'tahfiz' : 'islamicStudies'}`) : t('common.all')}</span>
             </div>
-          </div>
+          </div>}
           <button type="button" className="sidebar__logout" onClick={handleLogout}>
             <Icon name="logout" size={17} />
             {t('common.logout')}
@@ -253,7 +255,7 @@ export default function Layout() {
                 </select>
                 <Icon name="chevronDown" size={15} />
               </label>
-            ) : (
+            ) : isParent ? null : (
               <span className="topbar__school">{user.school?.name}</span>
             )}
           </div>
@@ -289,7 +291,7 @@ export default function Layout() {
                   </div>
                   <Link to="/app/settings">{t('common.profile')}</Link>
                   <Link to="/app/notifications">{t('common.notifications')}</Link>
-                  <Link to="/">{t('nav.backToSite')}</Link>
+                  {!isParent && <Link to="/">{t('nav.backToSite')}</Link>}
                   <button type="button" onClick={handleLogout}>
                     {t('common.logout')}
                   </button>

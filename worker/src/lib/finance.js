@@ -462,7 +462,7 @@ export async function runReminders(env, asOf = today()) {
         body:
           stage === 3
             ? `Peringatan mesra: invois ${inv.number} sebanyak RM ${(outstanding / 100).toFixed(2)} telah melepasi tarikh akhir ${inv.due_date}. Sila buat bayaran.\nFriendly reminder: invoice ${inv.number} for RM ${(outstanding / 100).toFixed(2)} is past its due date of ${inv.due_date}. Please make payment.`
-            : `Notis kedua: invois ${inv.number} sebanyak RM ${(outstanding / 100).toFixed(2)} masih belum dibayar (tarikh akhir ${inv.due_date}). Sila hubungi pihak sekolah.\nSecond notice: invoice ${inv.number} for RM ${(outstanding / 100).toFixed(2)} remains unpaid (due ${inv.due_date}). Please contact the school.`,
+            : `Notis kedua: invois ${inv.number} sebanyak RM ${(outstanding / 100).toFixed(2)} masih belum dibayar (tarikh akhir ${inv.due_date}). Sila hubungi pihak madrasah.\nSecond notice: invoice ${inv.number} for RM ${(outstanding / 100).toFixed(2)} remains unpaid (due ${inv.due_date}). Please contact the madrasah.`,
         language: 'bm',
       });
     } else {

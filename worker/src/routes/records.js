@@ -495,7 +495,7 @@ const superOnly = async (c, next) => {
 };
 
 const NOT_YOUR_PARENT =
-  'Anda hanya boleh mengemas kini ibu bapa yang mempunyai anak di sekolah ini. / You can only edit a parent who has a child at this school.';
+  'Anda hanya boleh mengemas kini ibu bapa yang mempunyai anak di madrasah ini. / You can only edit a parent who has a child at this madrasah.';
 
 records.get('/parents', staffOnly, async (c) => {
   const auth = c.get('auth');
@@ -582,7 +582,7 @@ records.post('/parents', requireRoles('school_admin'), async (c) => {
   } else if (!auth.isSuper) {
     return bad('Pilih anak untuk dipautkan. / Choose a child to link.', 400, { code: 'student_required' });
   }
-  if (!auth.activeSchool) return bad('Pilih sekolah dahulu. / Select a school first.');
+  if (!auth.activeSchool) return bad('Pilih madrasah dahulu. / Select a madrasah first.');
   const r = await registerParent(
     c.env,
     {
@@ -676,7 +676,7 @@ records.post('/parents/:id/link', requireRoles('school_admin'), async (c) => {
   const student = await c.env.DB.prepare('SELECT * FROM students WHERE id = ? AND school_id = ?')
     .bind(body.studentId || '', auth.activeSchool)
     .first();
-  if (!student) return bad('Pelajar tidak dijumpai di sekolah ini. / Student not found at this school.', 404);
+  if (!student) return bad('Pelajar tidak dijumpai di madrasah ini. / Student not found at this madrasah.', 404);
   const plan = await planParent(
     c.env,
     { parentId: c.req.param('id'), ic: body.parentIc, email: body.email, phone: body.phone },
@@ -709,7 +709,7 @@ records.delete('/parents/:id/links/:studentId', requireRoles('school_admin'), as
     .first();
   if (!link) return bad('Pautan tidak dijumpai. / Link not found.', 404);
   if (!auth.isSuper && link.student_school !== auth.activeSchool) {
-    return bad('Anda hanya boleh membuang pautan pelajar sekolah anda. / You can only remove links for students in your own school.', 403);
+    return bad('Anda hanya boleh membuang pautan pelajar madrasah anda. / You can only remove links for students in your own madrasah.', 403);
   }
   const count = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM parent_students WHERE student_id = ?').bind(studentId).first();
   const lastLink = (count?.n || 0) <= 1;

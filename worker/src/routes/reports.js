@@ -156,7 +156,7 @@ reports.get('/:id', async (c) => {
       .bind(schoolId)
       .all();
     def = {
-      title: 'Asatizah-school assignments / Penugasan asatizah',
+      title: 'Asatizah-madrasah assignments / Penugasan asatizah',
       columns: [
         { key: 'full_name', label: 'Teacher' },
         { key: 'school_name', label: 'School' },

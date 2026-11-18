@@ -1379,6 +1379,21 @@ ul, ol { margin: 0; padding: 0; }
   .hero__copy h1 { font-size: 2.05rem; }
 }
 
+/* Lead-capture landing (CR-PR 2026-11-17): hero copy + sign-in card */
+.hero--lead { padding-bottom: 62px; }
+.hero--lead .hero__copy { padding-bottom: 0; }
+.hero__login { display: flex; justify-content: flex-end; }
+.leadcard { margin: 0; max-width: 410px; background: var(--surface, #fff); color: var(--ink); border-radius: 18px; padding: 28px 26px; box-shadow: 0 30px 70px rgba(0, 0, 0, 0.28); }
+.leadcard h2 { font-size: 1.6rem; margin: 0; }
+.leadcard > p { margin: 4px 0 18px; }
+.leadcard .authform__links a { color: var(--brand); }
+@media (max-width: 900px) {
+  .hero--lead { padding-bottom: 36px; }
+  .hero--lead .hero__copy { padding-bottom: 26px; }
+  .hero__login { justify-content: center; }
+}
+@media (max-width: 520px) { .leadcard { padding: 22px 18px; } }
+
 .section { max-width: 1180px; margin: 0 auto; padding: 68px 28px; }
 .section--tint { max-width: none; background: var(--bg-warm); }
 .section--tint > * { max-width: 1180px; margin-left: auto; margin-right: auto; }

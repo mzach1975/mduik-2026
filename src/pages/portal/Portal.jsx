@@ -1,7 +1,6 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../../api';
-import { useAuth } from '../../auth';
 import { useI18n } from '../../i18n';
 import { useApi } from '../../hooks';
 import Icon from '../../components/Icon';
@@ -10,23 +9,17 @@ import {
   Badge,
   Card,
   ConfirmDialog,
-  Field,
-  Input,
-  Modal,
   PageHeader,
   StatusBadge,
-  Textarea,
   useToast,
 } from '../../components/ui';
 
 export default function Portal() {
   const { t, money, date } = useI18n();
-  const { user } = useAuth();
   const { push } = useToast();
   const navigate = useNavigate();
   const { data, reload } = useApi('/portal/children');
   const { data: appData, reload: reloadApps } = useApi('/portal/applications');
-  const [contactOpen, setContactOpen] = useState(false);
   const [offer, setOffer] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -53,11 +46,6 @@ export default function Portal() {
       <PageHeader
         title={t('portal.title')}
         subtitle={t('portal.subtitle')}
-        actions={
-          <button type="button" className="btn btn--ghost btn--sm" onClick={() => setContactOpen(true)}>
-            <Icon name="edit" size={15} /> {t('portal.updateContact')}
-          </button>
-        }
       />
 
       <Alert tone="info" title={t('portal.noOnlinePayment')}>{t('portal.contactSchool')}</Alert>
@@ -169,16 +157,6 @@ export default function Portal() {
         )}
       </Card>
 
-      <ContactModal
-        open={contactOpen}
-        onClose={() => setContactOpen(false)}
-        email={user?.email || ''}
-        onSaved={() => {
-          push(t('portal.contactUpdated'));
-          setContactOpen(false);
-        }}
-      />
-
       <ConfirmDialog
         open={!!offer}
         onClose={() => setOffer(null)}
@@ -193,48 +171,3 @@ export default function Portal() {
   );
 }
 
-function ContactModal({ open, onClose, email, onSaved }) {
-  const { t } = useI18n();
-  const { push } = useToast();
-  const [form, setForm] = useState({ email, phone: '', address: '' });
-  const [busy, setBusy] = useState(false);
-
-  async function save() {
-    setBusy(true);
-    try {
-      await api.patch('/portal/contact', form);
-      onSaved();
-    } catch (err) {
-      push(err.message, 'danger');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title={t('portal.updateContact')}
-      footer={
-        <>
-          <button type="button" className="btn btn--ghost" onClick={onClose}>{t('common.cancel')}</button>
-          <button type="button" className="btn btn--primary" onClick={save} disabled={busy}>
-            {busy && <span className="spinner spinner--light" />} {t('common.save')}
-          </button>
-        </>
-      }
-    >
-      <p className="muted">{t('parents.contactHint')}</p>
-      <Field label={t('common.email')}>
-        <Input type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} />
-      </Field>
-      <Field label={t('common.phone')}>
-        <Input value={form.phone} onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} placeholder="+60" />
-      </Field>
-      <Field label={t('common.address')}>
-        <Textarea rows={3} value={form.address} onChange={(e) => setForm((f) => ({ ...f, address: e.target.value }))} />
-      </Field>
-    </Modal>
-  );
-}

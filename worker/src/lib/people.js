@@ -97,7 +97,7 @@ export function message(code, kind = 'parent') {
       'Nyatakan sebab (sekurang-kurangnya 5 aksara) untuk mencipta rekod baharu walaupun e-mel atau telefon sudah wujud. / Give a reason (at least 5 characters) for creating a new record when the email or phone already exists.',
     duplicate_contact:
       'E-mel atau telefon ini sudah digunakan oleh ibu bapa atau asatizah lain. Gunakan rekod sedia ada atau cipta juga dengan sebab. / This email or phone is already used by another parent or asatizah. Use the existing record or create anyway with a reason.',
-    already_member: 'Asatizah ini sudah berdaftar di sekolah ini. / This asatizah is already registered at this school.',
+    already_member: 'Asatizah ini sudah berdaftar di madrasah ini. / This asatizah is already registered at this madrasah.',
   };
   return m[code] || 'Ralat. / Error.';
 }

@@ -188,7 +188,7 @@ class PdfDoc {
     });
     const infoObj = firstPageObj + pageCount * 2;
     const title = this.meta.title || 'MDUIK Document';
-    objects[infoObj] = `<< /Title (${esc(title)}) /Producer (MDUIK School Administration System) /CreationDate (D:${new Date()
+    objects[infoObj] = `<< /Title (${esc(title)}) /Producer (MDUIK Madrasah Administration System) /CreationDate (D:${new Date()
       .toISOString()
       .replace(/[-:TZ.]/g, '')
       .slice(0, 14)}) >>`;
@@ -315,7 +315,7 @@ export function buildReceiptPdf({ school, receipt, payment, student, parent, all
     size: 7.5,
     color: '#9ca3af',
   });
-  doc.textRight(PAGE_W - 40, PAGE_H - 40, 'MDUIK School Administration System', { size: 7.5, color: '#9ca3af' });
+  doc.textRight(PAGE_W - 40, PAGE_H - 40, 'MDUIK Madrasah Administration System', { size: 7.5, color: '#9ca3af' });
   return doc.finish();
 }
 

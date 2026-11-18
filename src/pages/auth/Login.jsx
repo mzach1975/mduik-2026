@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
-import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../auth';
 import { useI18n } from '../../i18n';
 import Icon from '../../components/Icon';
 import { BrandMark, GeoPattern } from '../../components/Brand';
-import { Alert, Brand, Field, Input } from '../../components/ui';
+import { Brand } from '../../components/ui';
+import LoginForm from '../../components/LoginForm';
 
 const DEMO = [
-  { email: 'super@mduik.my', password: 'Admin@12345', role: 'users.superAdmin', scope: 'Semua sekolah' },
+  { email: 'super@mduik.my', password: 'Admin@12345', role: 'users.superAdmin', scope: 'Semua madrasah' },
   { email: 'admin.tahfiz@mduik.my', password: 'Mduik@2026', role: 'users.schoolAdmin', scope: 'MDUIK Tahfiz' },
   { email: 'admin.islam@mduik.my', password: 'Mduik@2026', role: 'users.schoolAdmin', scope: 'MDUIK Pengajian Islam' },
   { email: 'bendahari@mduik.my', password: 'Mduik@2026', role: 'users.bursar', scope: 'MDUIK Tahfiz' },
@@ -17,15 +18,10 @@ const DEMO = [
 ];
 
 export default function Login() {
-  const { user, login } = useAuth();
+  const { user } = useAuth();
   const { t, lang, setLang } = useI18n();
-  const navigate = useNavigate();
   const location = useLocation();
-  const [identifier, setIdentifier] = useState('');
-  const [password, setPassword] = useState('');
-  const [show, setShow] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const [creds, setCreds] = useState({ identifier: '', password: '' });
   const [showDemo, setShowDemo] = useState(false);
 
   useEffect(() => {
@@ -37,25 +33,8 @@ export default function Login() {
     return <Navigate to={target} replace />;
   }
 
-  async function submit(e) {
-    e.preventDefault();
-    setBusy(true);
-    setError('');
-    try {
-      const u = await login(identifier.trim(), password);
-      const target = location.state?.from || (u.role === 'parent' ? '/app/portal' : '/app');
-      navigate(target, { replace: true });
-    } catch (err) {
-      setError(err.status === 429 ? t('auth.accountLocked') : err.message || t('auth.loginFailed'));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   function useDemo(account) {
-    setIdentifier(account.email);
-    setPassword(account.password);
-    setError('');
+    setCreds({ identifier: account.email, password: account.password });
   }
 
   return (
@@ -113,28 +92,7 @@ export default function Login() {
           <h2>{t('auth.welcomeBack')}</h2>
           <p className="muted">{t('auth.signInSubtitle')}</p>
 
-          <form onSubmit={submit} className="authform">
-            <Field label={t('auth.identifier')} required>
-              <Input value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder={t('auth.identifierPlaceholder')} autoComplete="username" />
-            </Field>
-            <Field label={t('auth.password')} required>
-              <span className="passwordfield">
-                <Input type={show ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder={t('auth.passwordPlaceholder')} autoComplete="current-password" />
-                <button type="button" className="passwordfield__toggle" onClick={() => setShow((v) => !v)} aria-label={show ? t('common.hide') : t('common.show')}>
-                  <Icon name="eye" size={17} />
-                </button>
-              </span>
-            </Field>
-            {error && <Alert tone="danger">{error}</Alert>}
-            <button type="submit" className="btn btn--primary btn--block btn--lg" disabled={busy || !identifier || !password}>
-              {busy && <span className="spinner spinner--light" />} {t('auth.signIn')}
-              {!busy && <Icon name="arrowRight" size={17} />}
-            </button>
-            <div className="authform__links">
-              <Link to="/forgot-password">{t('auth.forgotPassword')}</Link>
-              <Link to="/apply">{t('landing.applyNow')}</Link>
-            </div>
-          </form>
+          <LoginForm identifier={creds.identifier} password={creds.password} onChange={(p) => setCreds((v) => ({ ...v, ...p }))} />
 
           <div className="demobox">
             <button type="button" className="demobox__toggle" onClick={() => setShowDemo((v) => !v)} aria-expanded={showDemo}>
