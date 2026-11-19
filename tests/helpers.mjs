@@ -71,6 +71,8 @@ export async function setup() {
       name,
       NOW,
     );
+    // CR-PR 2026-11-18: every new student needs a class; one active class per school.
+    sql("INSERT INTO classes (id, school_id, name, status, created_at) VALUES (?,?,?,'active',?)", `cls_${sid.slice(4)}`, sid, 'Tahun 1', NOW);
   }
   const users = {};
   for (const [key, school, role] of [

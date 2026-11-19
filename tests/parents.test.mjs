@@ -14,7 +14,7 @@ let seq = 0;
 async function register(t, who, schoolId, form = {}, app = {}) {
   const n = ++seq;
   const appId = t.acceptedApplication(schoolId, app);
-  const defaults = { studentIc: `S${String(n).padStart(8, '0')}` };
+  const defaults = { studentIc: `S${String(n).padStart(8, '0')}`, classId: `cls_${schoolId.slice(4)}`, placement: 'day' };
   if (!form.parentId) {
     defaults.parentEmail = `p${n}@test.my`;
     defaults.parentPhone = `017${String(n).padStart(7, '0')}`;
@@ -123,7 +123,7 @@ test('manual creation and bulk import apply the same duplicate check', async () 
 
   const dry = await t.call('adminA', 'POST', '/imports', {
     type: 'students',
-    rows: [{ full_name: 'Imported Child', ic: 'BC1234567', parent_name: 'Someone', parent_ic: '770707-07-7777', parent_email: 'aminah@test.my', parent_phone: '0170000999' }],
+    rows: [{ full_name: 'Imported Child', ic: 'BC1234567', class: 'tahun 1', placement: 'day', parent_name: 'Someone', parent_ic: '770707-07-7777', parent_email: 'aminah@test.my', parent_phone: '0170000999' }],
   });
   assert.equal(dry.status, 201, JSON.stringify(dry.data));
   assert.equal(dry.data.batch.duplicates, 1);

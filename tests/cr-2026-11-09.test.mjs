@@ -79,9 +79,9 @@ test('3. no fee plan, class, student phone or student email in schema, API or te
   const cols = t.many('PRAGMA table_info(students)').map((c) => c.name);
   for (const c of ['class_name', 'phone', 'email', 'fee_plan_id']) assert.ok(!cols.includes(c), c);
   assert.equal(t.one("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'fee_plans'").n, 0);
-  const s = await t.call('adminA', 'POST', '/students', { fullName: 'Ali', ic: '150101-14-1234' });
+  const s = await t.call('adminA', 'POST', '/students', { classId: 'cls_a', placement: 'day', fullName: 'Ali', ic: '150101-14-1234' });
   const detail = await t.call('adminA', 'GET', `/students/${s.data.id}`);
-  for (const k of ['class_name', 'phone', 'email', 'fee_plan_id', 'ic_hash', 'ic_enc']) assert.ok(!(k in detail.data.student), k);
+  for (const k of ['phone', 'email', 'fee_plan_id', 'ic_hash', 'ic_enc']) assert.ok(!(k in detail.data.student), k);
   assert.equal(detail.data.student.monthly_fee_cents, 10000);
   const settings = await t.call('adminA', 'GET', '/school-settings');
   assert.equal(settings.data.feePlans, undefined);
@@ -91,7 +91,8 @@ test('3. no fee plan, class, student phone or student email in schema, API or te
   assert.equal(lookups.data.classes, undefined);
   assert.equal(lookups.data.feePlans, undefined);
   const reports = await t.call('adminA', 'GET', '/reports/student-records');
-  assert.ok(!JSON.stringify(reports.data).toLowerCase().includes('class'));
+  // CR-PR 2026-11-18 brought class back as a student label (class_id); fee plans stay removed.
+  assert.ok(!JSON.stringify(reports.data).toLowerCase().includes('fee_plan'));
   const { default: worker } = await import('../worker/src/index.js');
   const { signToken, SESSION_COOKIE } = await import('../worker/src/lib/auth.js');
   const cookie = `${SESSION_COOKIE}=${await signToken(t.env, { sub: 'usr_adminA', sch: 'sch_a' })}`;
@@ -100,7 +101,7 @@ test('3. no fee plan, class, student phone or student email in schema, API or te
     assert.equal(res.status, 200);
     const header = (await res.text()).replace(/^﻿/, '').trim().split(',');
     assert.ok(header.includes('ic'), type);
-    assert.ok(!header.some((h) => /class|fee_plan|monthly_fee/.test(h)), `${type}: ${header}`);
+    assert.ok(!header.some((h) => /class_name|fee_plan|monthly_fee/.test(h)), `${type}: ${header}`);
     if (type === 'students') assert.ok(!header.includes('phone') && !header.includes('email'), header.join());
   }
   assert.equal((await t.call('adminA', 'GET', '/imports/templates/classes')).status, 404);
@@ -108,12 +109,14 @@ test('3. no fee plan, class, student phone or student email in schema, API or te
 
 test('4. add student: IC / Passport No. is mandatory and accepts birth certificate and MyKid numbers', async () => {
   const t = await setup();
-  const noIc = await t.call('adminA', 'POST', '/students', { fullName: 'Ali' });
+  const noIc = await t.call('adminA', 'POST', '/students', { classId: 'cls_a', placement: 'day', fullName: 'Ali' });
   assert.equal(noIc.status, 400);
   assert.equal(noIc.data.code, 'ic_required');
-  const birthCert = await t.call('adminA', 'POST', '/students', { fullName: 'Ali', ic: 'bc 123-4567' });
+  const birthCert = await t.call('adminA', 'POST', '/students', { classId: 'cls_a', placement: 'day', fullName: 'Ali', ic: 'bc 123-4567' });
   assert.equal(birthCert.status, 201, JSON.stringify(birthCert.data));
   const myKid = await t.call('adminA', 'POST', '/students', {
+    classId: 'cls_a',
+    placement: 'day',
     fullName: 'Abu',
     ic: '150101-14-1234',
     // A parent section sent by an old client is ignored.
@@ -126,15 +129,15 @@ test('4. add student: IC / Passport No. is mandatory and accepts birth certifica
   const row = t.one('SELECT ic_masked FROM students WHERE id = ?', myKid.data.id);
   assert.equal(row.ic_masked, '********1234');
   // Same IC again: a warning that the admin confirms.
-  const dup = await t.call('adminA', 'POST', '/students', { fullName: 'Ali 2', ic: 'BC1234567' });
+  const dup = await t.call('adminA', 'POST', '/students', { classId: 'cls_a', placement: 'day', fullName: 'Ali 2', ic: 'BC1234567' });
   assert.equal(dup.status, 409);
   assert.equal(dup.data.code, 'student_ic_exists');
-  assert.equal((await t.call('adminA', 'POST', '/students', { fullName: 'Ali 2', ic: 'BC1234567', allowDuplicateIc: true })).status, 201);
+  assert.equal((await t.call('adminA', 'POST', '/students', { classId: 'cls_a', placement: 'day', fullName: 'Ali 2', ic: 'BC1234567', allowDuplicateIc: true })).status, 201);
 });
 
 test('5. the student page lists parents (masked IC, phone, email) read only', async () => {
   const t = await setup();
-  const s = await t.call('adminA', 'POST', '/students', { fullName: 'Ali', ic: '150101-14-1234' });
+  const s = await t.call('adminA', 'POST', '/students', { classId: 'cls_a', placement: 'day', fullName: 'Ali', ic: '150101-14-1234' });
   await addParent(t, 'adminA', s.data.id);
   const detail = await t.call('adminA', 'GET', `/students/${s.data.id}`);
   assert.equal(detail.data.parents.length, 1);
@@ -339,7 +342,7 @@ test('18. the import dry run flags duplicates by IC / Passport No., email and ph
 
   const students = await t.call('adminA', 'POST', '/imports', {
     type: 'students',
-    rows: [{ full_name: 'Kid', ic: '150101-14-1234' }, { full_name: 'No IC' }],
+    rows: [{ full_name: 'Kid', ic: '150101-14-1234', class: 'Tahun 1', placement: 'Harian' }, { full_name: 'No IC' }],
   });
   assert.equal(students.data.report.rows[0].errors.length, 0);
   assert.ok(students.data.report.rows[1].errors.length);

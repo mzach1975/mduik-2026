@@ -127,6 +127,35 @@ async function migrate(env) {
   ]);
   await backfillPhoneNorm(db, 'parents');
   await migrateCr20261109(db);
+  await migrateCr20261118(db);
+}
+
+/**
+ * CR-PR 2026-11-18: classes, and registration date / class / placement on
+ * students. The column is class_id (not class_name, which the 2026-11-09
+ * migration drops). Existing students get registration_date from created_at.
+ */
+async function migrateCr20261118(db) {
+  await db
+    .prepare(`CREATE TABLE IF NOT EXISTS classes (
+      id TEXT PRIMARY KEY,
+      school_id TEXT NOT NULL REFERENCES schools(id),
+      name TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT)`)
+    .run();
+  await addColumns(db, 'students', [
+    ['registration_date', 'TEXT'],
+    ['class_id', 'TEXT'],
+    ['placement', 'TEXT'],
+  ]);
+  await db.batch([
+    db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_classes_name ON classes(school_id, lower(name))'),
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_students_class ON students(class_id)'),
+    db.prepare('UPDATE students SET registration_date = substr(created_at, 1, 10) WHERE registration_date IS NULL'),
+  ]);
 }
 
 /**

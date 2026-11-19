@@ -88,10 +88,24 @@ CREATE TABLE IF NOT EXISTS students (
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('applicant','active','withdrawn','graduated')),
   application_id TEXT,
   import_batch_id TEXT,
+  registration_date TEXT,
+  class_id TEXT,
+  placement TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_students_school ON students(school_id, status);
+
+-- CR-PR 2026-11-18: classes per school (a label only, no fee effect).
+CREATE TABLE IF NOT EXISTS classes (
+  id TEXT PRIMARY KEY,
+  school_id TEXT NOT NULL REFERENCES schools(id),
+  name TEXT NOT NULL,
+  description TEXT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_students_ic ON students(ic_hash);
 
 -- One record per person, found by the keyed IC hash. Indexes on columns added

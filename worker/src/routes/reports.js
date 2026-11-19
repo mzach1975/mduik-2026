@@ -5,6 +5,8 @@ import { audit } from '../lib/audit.js';
 import { agingReport, ADJUSTED_RATE_SQL, monthlyRate } from '../lib/finance.js';
 import { buildReportPdf } from '../lib/pdf.js';
 
+const PLACEMENT_LABEL = { boarding: 'Boarding / Asrama', day: 'Day / Harian', temp_boarding: 'Temporary Boarding / Asrama Sementara' };
+
 const reports = new Hono();
 reports.use('*', authMiddleware);
 
@@ -86,7 +88,8 @@ reports.get('/:id', async (c) => {
       summary: [{ label: 'Interviews', value: results.length }],
     };
   } else if (reportId === 'registration-list') {
-    const sql = `SELECT s.id, s.full_name, s.status, s.ic_masked, s.monthly_tracking, s.created_at,
+    const sql = `SELECT s.id, s.full_name, s.status, s.ic_masked, s.monthly_tracking, s.created_at, s.registration_date, s.placement,
+        (SELECT cl.name FROM classes cl WHERE cl.id = s.class_id) AS class_name,
         (SELECT p.full_name FROM parents p JOIN parent_students ps ON ps.parent_id = p.id WHERE ps.student_id = s.id LIMIT 1) AS parent_name,
         (SELECT p.phone FROM parents p JOIN parent_students ps ON ps.parent_id = p.id WHERE ps.student_id = s.id LIMIT 1) AS parent_phone
       FROM students s WHERE s.school_id = ? AND s.status IN ('active','withdrawn','graduated')
@@ -97,6 +100,9 @@ reports.get('/:id', async (c) => {
       columns: [
         { key: 'full_name', label: 'Student' },
         { key: 'ic_masked', label: 'IC / Passport No.' },
+        { key: 'registration_date', label: 'Registration date' },
+        { key: 'class_name', label: 'Class' },
+        { key: 'placement', label: 'Placement', value: (r) => PLACEMENT_LABEL[r.placement] || '' },
         { key: 'parent_name', label: 'Parent' },
         { key: 'parent_phone', label: 'Phone' },
         { key: 'monthly_tracking', label: 'Tracking', value: (r) => (r.monthly_tracking ? 'On' : 'Off') },
@@ -107,7 +113,8 @@ reports.get('/:id', async (c) => {
     };
   } else if (reportId === 'student-records') {
     const school = await db.prepare('SELECT monthly_fee_cents FROM schools WHERE id = ?').bind(schoolId).first();
-    const sql = `SELECT s.full_name, s.ic_masked, s.dob, s.gender, s.status,
+    const sql = `SELECT s.full_name, s.ic_masked, s.dob, s.gender, s.status, s.registration_date, s.placement,
+        (SELECT cl.name FROM classes cl WHERE cl.id = s.class_id) AS class_name,
         ${ADJUSTED_RATE_SQL} AS adjusted_rate, s.monthly_tracking, s.tracking_start,
         (SELECT COALESCE(SUM(i.amount_cents - i.paid_cents - i.credited_cents - i.waived_cents),0) FROM invoices i WHERE i.student_id = s.id AND i.status IN ('unpaid','partial')) AS outstanding
       FROM students s WHERE s.school_id = ? ORDER BY s.full_name`;
@@ -118,6 +125,9 @@ reports.get('/:id', async (c) => {
         { key: 'full_name', label: 'Student' },
         { key: 'ic_masked', label: 'IC / Passport No.' },
         { key: 'gender', label: 'Gender' },
+        { key: 'registration_date', label: 'Registration date' },
+        { key: 'class_name', label: 'Class' },
+        { key: 'placement', label: 'Placement', value: (r) => PLACEMENT_LABEL[r.placement] || '' },
         { key: 'monthly_fee', label: 'Monthly fee (RM)', value: (r) => money(monthlyRate(r.adjusted_rate, school || {})) },
         { key: 'monthly_tracking', label: 'Tracking', value: (r) => (r.monthly_tracking ? 'On' : 'Off') },
         { key: 'outstanding', label: 'Outstanding (RM)', value: (r) => money(r.outstanding) },

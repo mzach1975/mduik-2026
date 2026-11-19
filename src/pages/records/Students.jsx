@@ -23,6 +23,7 @@ import {
   Textarea,
   useToast,
 } from '../../components/ui';
+import { PLACEMENTS, placementLabel, useClasses, StudentClassFields, NoClassesAlert, studentFieldsComplete, todayLocal } from '../../components/StudentFields';
 
 export default function Students() {
   const { t, money, number, statusLabel } = useI18n();
@@ -34,6 +35,8 @@ export default function Students() {
   const debounced = useDebounced(search);
   const status = params.get('status') || '';
   const tracking = params.get('tracking') || '';
+  const classId = params.get('classId') || '';
+  const placement = params.get('placement') || '';
   const page = Number(params.get('page') || 1);
   const [addOpen, setAddOpen] = useState(false);
 
@@ -49,9 +52,10 @@ export default function Students() {
     }
   }, [debounced]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const query = useMemo(() => buildQuery({ q: debounced, status, tracking, page, pageSize: 20 }), [debounced, status, tracking, page]);
+  const query = useMemo(() => buildQuery({ q: debounced, status, tracking, classId, placement, page, pageSize: 20 }), [debounced, status, tracking, classId, placement, page]);
   const { data, loading, error, reload } = useApi(`/students${query}`);
   const isAdmin = user?.isSuper || user?.role === 'school_admin';
+  const { classes } = useClasses();
 
   function update(key, value) {
     setParams((prev) => {
@@ -92,6 +96,14 @@ export default function Students() {
               <option value="on">{t('students.trackingOn')}</option>
               <option value="off">{t('students.trackingOff')}</option>
             </Select>
+            <Select value={classId} onChange={(e) => update('classId', e.target.value)}>
+              <option value="">{t('common.all')} · {t('students.class')}</option>
+              {classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </Select>
+            <Select value={placement} onChange={(e) => update('placement', e.target.value)}>
+              <option value="">{t('common.all')} · {t('students.placement')}</option>
+              {PLACEMENTS.map((p) => <option key={p} value={p}>{placementLabel(t, p)}</option>)}
+            </Select>
           </div>
         </div>
 
@@ -114,6 +126,8 @@ export default function Students() {
                     </span>
                   ),
                 },
+                { key: 'class_name', label: t('students.class'), render: (r) => r.class_name || '—' },
+                { key: 'placement', label: t('students.placement'), render: (r) => placementLabel(t, r.placement) },
                 {
                   key: 'monthly_fee_cents',
                   label: t('students.monthlyFee'),
@@ -155,7 +169,8 @@ function AddStudentModal({ open, onClose, onDone }) {
   const { t } = useI18n();
   const { push } = useToast();
   const [busy, setBusy] = useState(false);
-  const empty = { fullName: '', ic: '', dob: '', gender: '', address: '', monthlyTracking: false };
+  const empty = { fullName: '', ic: '', dob: '', gender: '', address: '', monthlyTracking: false, registrationDate: todayLocal(), classId: '', placement: '' };
+  const { active: classes, loading: classesLoading } = useClasses(open);
   const [form, setForm] = useState(empty);
   const [icMatches, setIcMatches] = useState(null);
   const set = (k, v) => {
@@ -192,7 +207,7 @@ function AddStudentModal({ open, onClose, onDone }) {
       footer={
         <>
           <button type="button" className="btn btn--ghost" onClick={onClose}>{t('common.cancel')}</button>
-          <button type="button" className="btn btn--primary" onClick={submit} disabled={busy || !form.fullName.trim() || !form.ic.trim()}>
+          <button type="button" className="btn btn--primary" onClick={submit} disabled={busy || !form.fullName.trim() || !form.ic.trim() || !studentFieldsComplete(form)}>
             {busy && <span className="spinner spinner--light" />} {icMatches ? t('students.saveAnyway') : t('students.saveStudent')}
           </button>
         </>
@@ -219,6 +234,11 @@ function AddStudentModal({ open, onClose, onDone }) {
         <Field label={t('students.address')} className="formgrid__full">
           <Textarea rows={2} value={form.address} onChange={(e) => set('address', e.target.value)} />
         </Field>
+      </div>
+      <h4 className="detaillabel">{t('students.enrolment')}</h4>
+      {!classesLoading && !classes.length && <NoClassesAlert />}
+      <div className="formgrid">
+        <StudentClassFields form={form} set={set} classes={classes} />
       </div>
       <Checkbox checked={form.monthlyTracking} onChange={(e) => set('monthlyTracking', e.target.checked)} label={t('students.trackingHint')} />
       <Alert tone="info">{t('students.feeFromSchool')}</Alert>

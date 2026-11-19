@@ -3,6 +3,7 @@ import { openFile } from '../../api';
 import { useI18n } from '../../i18n';
 import { useApi } from '../../hooks';
 import Icon from '../../components/Icon';
+import { placementLabel } from '../../components/StudentFields';
 import {
   Alert,
   Card,
@@ -38,7 +39,13 @@ export default function ChildDetail() {
         }
         eyebrow={student.school_name}
         title={student.full_name}
-        subtitle={`${t('students.registeredOn')} ${date(student.created_at)}`}
+        subtitle={[
+          `${t('students.registeredOn')} ${date(student.registration_date || student.created_at)}`,
+          student.class_name && `${t('students.class')}: ${student.class_name}`,
+          student.placement && `${t('students.placement')}: ${placementLabel(t, student.placement)}`,
+        ]
+          .filter(Boolean)
+          .join(' · ')}
         actions={<StatusBadge status={student.status} />}
       />
 

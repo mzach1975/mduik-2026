@@ -6,6 +6,7 @@ import { notify, notifyRoles, notifyParentsOfStudent, subjectFor } from '../lib/
 import { createInvoice, dueDateFor, studentBalance } from '../lib/finance.js';
 import { planParent, planFailure, commitParent, linkParentToStudent, ensureParentLogin } from '../lib/parents.js';
 import { message } from '../lib/people.js';
+import { newStudentFields } from '../lib/students.js';
 
 const admissions = new Hono();
 admissions.use('*', authMiddleware);
@@ -456,6 +457,11 @@ admissions.post('/applications/:id/register', requireRoles('school_admin'), asyn
     return bad('No. IC / Pasport pelajar diperlukan. / Student IC / Passport No. is required.', 400, { code: 'student_ic_required' });
   }
 
+  // CR-PR 2026-11-18: registration date (default today), class and placement are required.
+  const fields = await newStudentFields(c.env, auth.activeSchool, body);
+  if (fields.error) return fields.error;
+  const { class_name: className, ...extra } = fields.values;
+
   // The parent is resolved before anything is written, so a duplicate warning leaves no partial registration.
   const parentPlan = await planParent(
     c.env,
@@ -498,8 +504,8 @@ admissions.post('/applications/:id/register', requireRoles('school_admin'), asyn
     // Monthly invoices use the school's default monthly fee unless an adjustment is approved later.
     await c.env.DB.prepare(
       `INSERT INTO students (id, school_id, full_name, ic_hash, ic_enc, ic_masked, dob, gender, address,
-        monthly_fee_cents, monthly_tracking, status, application_id, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,0,0,'active',?,?)`,
+        monthly_fee_cents, monthly_tracking, status, application_id, registration_date, class_id, placement, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,0,0,'active',?,?,?,?,?)`,
     )
       .bind(
         studentId,
@@ -512,11 +518,16 @@ admissions.post('/applications/:id/register', requireRoles('school_admin'), asyn
         body.gender || app.gender || null,
         body.address || app.address || '',
         appId,
+        extra.registration_date,
+        extra.class_id,
+        extra.placement,
         nowIso(),
       )
       .run();
   } else {
-    await c.env.DB.prepare("UPDATE students SET status = 'active' WHERE id = ?").bind(studentId).run();
+    await c.env.DB.prepare("UPDATE students SET status = 'active', registration_date = ?, class_id = ?, placement = ?, updated_at = ? WHERE id = ?")
+      .bind(extra.registration_date, extra.class_id, extra.placement, nowIso(), studentId)
+      .run();
   }
 
   const parent = await commitParent(c.env, parentPlan);
@@ -545,7 +556,7 @@ admissions.post('/applications/:id/register', requireRoles('school_admin'), asyn
   });
 
   await c.env.DB.prepare("UPDATE applications SET status = 'registered' WHERE id = ?").bind(appId).run();
-  await audit(c, 'register', 'student', studentId, { after: { applicationId: appId, invoice: invoice.number } });
+  await audit(c, 'register', 'student', studentId, { after: { applicationId: appId, invoice: invoice.number, ...extra, class_name: className } });
   return json({ studentId, invoice, parentId: parent.id, parentLinked: !parentPlan.create, parentLoginCreated: login.created, arrearsWarning }, 201);
 });
 

@@ -1,6 +1,6 @@
 # CODE.md: how MDUIK works
 
-Reference for new sessions. `CLAUDE.md` covers commands, conventions and session history. This file covers architecture, data, flows and business rules. Updated 2026-11-18 (after CR-PR 2026-11-17). UI text says "madrasah" (BM and EN); code, routes and tables still say "school".
+Reference for new sessions. `CLAUDE.md` covers commands, conventions and session history. This file covers architecture, data, flows and business rules. Updated 2026-11-19 (after CR-PR 2026-11-18). UI text says "madrasah" (BM and EN); code, routes and tables still say "school".
 
 ## 1. What the system is
 A multi-tenant administration system for Islamic schools (categories `tahfiz` and `islamic_studies`) under MDUIK. Each school is a tenant. It covers:
@@ -46,6 +46,7 @@ Browser (React 19 SPA, Vite, react-router)  --fetch /api/* (cookie)-->  Cloudfla
 | `people.js` | person rules shared by parents and teachers: `checkNewPerson`, `findContactMatches` (parents ∪ teachers by email / normalised phone), `loginEmailTaken`, `knowsPerson`, bilingual `message(code, kind)`, `planFailure`, `ensureLogin`, `welcomeMessage` |
 | `parents.js` | `planParent` → `commitParent`, `findParentByIc`, `parentInSchool`, `linkParentToStudent`, `registerParent`, `ensureParentLogin`, `publicParent` |
 | `teachers.js` | `planTeacher` → `commitTeacher`, `addMembership`, `registerTeacher`, `teacherSchools`, `publicTeacher` |
+| `students.js` | CR-PR 2026-11-18 student fields: `PLACEMENTS`, `placementKey` (BM/EN labels → key), `registrationDateError`, `activeClass`/`activeClassByName`, `newStudentFields` (date default today, class and placement required) |
 | `finance.js` | numbering, invoice creation and status, credit application, payment allocation, receipt reversal, balances and aging, monthly and registration generation, reminders, `runDaily`, retention flagging |
 | `notify.js` | `notify` (inserts a `notifications` row, then emails if a recipient exists), `notifyRoles`, `notifyParentsOfStudent`, `subjectFor` |
 | `audit.js` | `audit(c, action, entity, id, {before, after})`, `auditView` |
@@ -71,6 +72,7 @@ Browser (React 19 SPA, Vite, react-router)  --fetch /api/* (cookie)-->  Cloudfla
   - `components/ui.jsx`: Card, Modal, Field, DataTable, ConfirmDialog, StatCard, toasts, and so on.
   - `Layout.jsx`: role-based sidebar (`navSections`) and the school switcher.
   - `ParentPicker.jsx`: the IC-first person search with the duplicate UI (`kind="parent"|"teacher"`).
+  - `StudentFields.jsx`: `useClasses`, `StudentClassFields` (registration date, class, placement), `placementLabel`, `NoClassesAlert`; used by Add student, Edit student and Register.
   - `Brand.jsx`: the logo `/images/mduik.jpg`.
 - **Locales:** `src/locales/bm.js` and `en.js` must keep identical key sets.
 
@@ -111,7 +113,9 @@ IDs are text with a prefix: `sch_`, `u_`/`usr`, `std`, `par`, `tch`, `tsm`, `ps`
   - Billing flags: `monthly_tracking` with `tracking_start` (`YYYY-MM`), `reminders_enabled`.
   - `application_id`, `import_batch_id`.
   - `monthly_fee_cents` is kept for history only. The billing rate comes from adjustments or the school (see §6).
-  - There is no class, phone, email or fee plan.
+  - CR-PR 2026-11-18: `registration_date` (YYYY-MM-DD, not in the future; existing rows backfilled from `created_at`), `class_id` → `classes`, `placement` (`boarding|day|temp_boarding`, labels Asrama/Harian/Asrama Sementara).
+  - There is no phone, email or fee plan. The class is a label only (no fee effect).
+- `classes (school_id, name, description, status active|inactive)`: unique on (school, lower(name)) (index in migrate.js).
 - `parents`:
   - Global, one row per person: name, email, phone, `phone_norm`, IC fields, address.
   - `user_id`, `status` (`active|inactive`), `duplicate_reason`.
@@ -252,7 +256,7 @@ IDs are text with a prefix: `sch_`, `u_`/`usr`, `std`, `par`, `tch`, `tsm`, `ps`
 5. Send the welcome notification.
 
 ### 6.5 Fees and invoices
-- **No fee plans and no class.**
+- **No fee plans.** Classes have no fee effect.
 - **School fees:** both are required when a school is created (400 `fees_required`). School Admin and Super Admin can edit them (audited). **Changes affect only invoices created afterwards**; issued invoices keep their amount (BR-08).
 - **Monthly rate** for a student = the latest approved `fee_adjustments.new_rate_cents` (`ADJUSTED_RATE_SQL`), otherwise the school's `monthly_fee_cents` at generation time.
 - **Fee adjustment:**
@@ -312,6 +316,12 @@ Every item mark is required and limited to its maximum.
 
 The marking page has a sticky score bar with a gold submit button (the old green-on-green button was hard to see).
 
+### 6.8a Classes, registration date and placement (CR-PR 2026-11-18)
+- **Classes:** Settings → Classes (School Admin; bursar can list). `GET/POST /classes`, `PATCH/DELETE /classes/:id`. Duplicate name → 409 `class_exists`. Delete with students → 409 `class_in_use` (deactivate instead). Inactive classes are not offered for new assignments but stay on existing students. All writes audited (`entity = class`).
+- **New student** (`POST /students`, registration, import): registration date (default today), an active class and a placement are required (`class_required|class_invalid|placement_required|placement_invalid|registration_date_*`). Re-registration of an existing student overwrites the three fields.
+- **Edit** (`PATCH /students/:id`): `classId`, `placement`, `registrationDate`; once sent they cannot be empty. A class change is audited with `class_id` and `class_name` before/after. Students created before the CR have no class until edited.
+- Students list filters `classId` and `placement`; reports `registration-list` and `student-records` include the three fields; the portal shows class and placement.
+
 ### 6.9 Parent portal
 - `GET /portal/children`: one card per linked child, showing the school name, balance, credit, next payment and open invoices.
   - **The total is the sum of the per-school balances.**
@@ -319,7 +329,7 @@ The marking page has a sticky score bar with a gold submit button (the old green
 
 ### 6.10 Imports (School Admin)
 - **Templates:**
-  - students: no class, phone, email or monthly fee
+  - students: `registration_date` (blank = today), `class` (required, an active class by name, case-insensitive), `placement` (required; key or BM/EN label); no phone, email or monthly fee
   - parents: includes `student_ic` to link
   - teachers: includes `ic`
 - **Dry run** (`POST /imports`):
@@ -353,7 +363,7 @@ The marking page has a sticky score bar with a gold submit button (the old green
 - `node --test "tests/**/*.test.mjs"` runs the real Worker against an in-memory `node:sqlite` D1 shim (`tests/helpers.mjs`).
 - Helpers: `api`, `raw`, `asUser`. `asUser` clears `must_change_password`.
 - `tests/fixtures/schema-v1.sql` is the pre-migration schema, used for migration tests.
-- Coverage: the parent spec (`parents.test.mjs`), CR 2026-11-09 (`cr-2026-11-09.test.mjs`), CR-PR 2026-11-11, CR-PR 2026-11-14 and CR-PR 2026-11-17 (`cr-pr-2026-11-*.test.mjs`): 44 tests.
+- Coverage: the parent spec (`parents.test.mjs`), CR 2026-11-09 (`cr-2026-11-09.test.mjs`), CR-PR 2026-11-11, CR-PR 2026-11-14, CR-PR 2026-11-17 and CR-PR 2026-11-18 (`cr-pr-2026-11-*.test.mjs`): 51 tests. `setup()` seeds an active class `cls_a`/`cls_b` ("Tahun 1") per school.
 
 ## 9. Known gaps and open questions
 - Parents and teachers created before IC became mandatory have no `ic_hash`, so IC search can't find them. Passport ICs hashed before the normaliser change were digits only and won't match.

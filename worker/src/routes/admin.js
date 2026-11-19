@@ -24,6 +24,7 @@ import { findContactMatches, checkNewPerson, message, ensureLogin } from '../lib
 import { planTeacher, commitTeacher, addMembership } from '../lib/teachers.js';
 import { flagRetentionRecords, runDaily, createInvoice, dueDateFor } from '../lib/finance.js';
 import { notify } from '../lib/notify.js';
+import { placementKey, activeClassByName, registrationDateError, studentFieldMessage } from '../lib/students.js';
 
 const admin = new Hono();
 admin.use('*', authMiddleware);
@@ -290,10 +291,11 @@ admin.post('/retention/:id/dismiss', requireRoles('school_admin'), async (c) => 
 });
 
 /* ------------------------------ Imports ------------------------------ */
-// No class, fee plan, student phone or student email columns. IC / Passport No.
-// is mandatory for students, parents and teachers.
+// No fee plan, student phone or student email columns. IC / Passport No. is
+// mandatory for students, parents and teachers. Students need an active class
+// (by name) and a placement; registration_date defaults to today.
 const TEMPLATES = {
-  students: ['full_name', 'ic', 'dob', 'gender', 'address', 'parent_name', 'parent_ic', 'parent_email', 'parent_phone', 'status'],
+  students: ['full_name', 'ic', 'dob', 'gender', 'address', 'registration_date', 'class', 'placement', 'parent_name', 'parent_ic', 'parent_email', 'parent_phone', 'status'],
   parents: ['full_name', 'ic', 'email', 'phone', 'address', 'student_ic'],
   teachers: ['full_name', 'ic', 'email', 'phone'],
   'opening-balances': ['student_name', 'student_ic', 'amount', 'due_date', 'description'],
@@ -384,6 +386,19 @@ async function validateImport(env, schoolId, type, rows) {
           .first();
         if (st) duplicates.push({ kind: 'student', id: st.id, full_name: st.full_name, matchedOn: ['ic'] });
       }
+      if (!r.registration_date) r.registration_date = today();
+      const dateErr = registrationDateError(r.registration_date);
+      if (dateErr) errors.push(studentFieldMessage(dateErr));
+      if (!r.class) errors.push(studentFieldMessage('class_required'));
+      else {
+        const cls = await activeClassByName(env, schoolId, r.class);
+        if (!cls) errors.push(studentFieldMessage('class_invalid'));
+        else r.class_id = cls.id;
+      }
+      const placement = placementKey(r.placement);
+      if (!r.placement) errors.push(studentFieldMessage('placement_required'));
+      else if (!placement) errors.push(studentFieldMessage('placement_invalid'));
+      else r.placement = placement;
       if (r.parent_name || r.parent_ic || r.parent_email || r.parent_phone) {
         const praw = await sealIc(env, r, 'parent_ic');
         const problem = checkNewPerson({ name: r.parent_name, ic: praw, email: r.parent_email, phone: r.parent_phone });
@@ -536,8 +551,8 @@ admin.post('/imports/:id/confirm', requireRoles('school_admin'), async (c) => {
         studentId = id('std');
         await env.DB.prepare(
           `INSERT INTO students (id, school_id, full_name, ic_hash, ic_enc, ic_masked, dob, gender, address,
-            monthly_fee_cents, monthly_tracking, status, import_batch_id, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,0,0,?,?,?)`,
+            monthly_fee_cents, monthly_tracking, status, import_batch_id, registration_date, class_id, placement, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,0,0,?,?,?,?,?,?)`,
         )
           .bind(
             studentId,
@@ -551,6 +566,9 @@ admin.post('/imports/:id/confirm', requireRoles('school_admin'), async (c) => {
             r.address || '',
             ['active', 'withdrawn', 'graduated', 'applicant'].includes(r.status) ? r.status : 'active',
             batch.id,
+            r.registration_date || today(),
+            r.class_id || null,
+            r.placement || null,
             nowIso(),
           )
           .run();

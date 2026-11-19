@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api, downloadFile } from '../../api';
 import { useAuth } from '../../auth';
@@ -25,6 +25,7 @@ import {
   Textarea,
   useToast,
 } from '../../components/ui';
+import { placementLabel, useClasses, StudentClassFields, studentFieldsComplete } from '../../components/StudentFields';
 
 export default function StudentDetail() {
   const { id } = useParams();
@@ -70,7 +71,7 @@ export default function StudentDetail() {
         }
         eyebrow={student.ic_masked || undefined}
         title={student.full_name}
-        subtitle={`${t('students.registeredOn')} ${date(student.created_at)}`}
+        subtitle={`${t('students.registeredOn')} ${date(student.registration_date || student.created_at)}`}
         actions={
           <>
             <StatusBadge status={student.status} />
@@ -102,6 +103,9 @@ export default function StudentDetail() {
                 { label: t('students.dob'), value: student.dob ? date(student.dob) : '—' },
                 { label: t('students.gender'), value: student.gender ? t(student.gender === 'male' ? 'apply.male' : 'apply.female') : '—' },
                 { label: t('common.address'), value: student.address || '—' },
+                { label: t('students.registrationDate'), value: student.registration_date ? date(student.registration_date) : '—' },
+                { label: t('students.class'), value: student.class_name || '—' },
+                { label: t('students.placement'), value: placementLabel(t, student.placement) },
               ]}
             />
           </Card>
@@ -305,15 +309,26 @@ export default function StudentDetail() {
 
 function EditModal({ open, onClose, onSubmit, busy, student }) {
   const { t } = useI18n();
-  const [form, setForm] = useState({
+  const initial = () => ({
     full_name: student.full_name || '',
     ic: '',
     dob: student.dob || '',
     gender: student.gender || '',
     address: student.address || '',
     status: student.status || 'active',
+    registrationDate: student.registration_date || '',
+    classId: student.class_id || '',
+    placement: student.placement || '',
   });
+  const [form, setForm] = useState(initial);
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const { active: classes } = useClasses(open);
+  // An inactive class stays selectable on the student who already has it.
+  const currentClass = student.class_id ? { id: student.class_id, name: student.class_name || '—' } : null;
+
+  useEffect(() => {
+    if (open) setForm(initial());
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <Modal
@@ -327,7 +342,7 @@ function EditModal({ open, onClose, onSubmit, busy, student }) {
           <button
             type="button"
             className="btn btn--primary"
-            disabled={busy}
+            disabled={busy || !studentFieldsComplete(form)}
             onClick={() => onSubmit({ ...form, ic: form.ic || undefined })}
           >
             {busy && <span className="spinner spinner--light" />} {t('students.saveStudent')}
@@ -363,6 +378,7 @@ function EditModal({ open, onClose, onSubmit, busy, student }) {
             <option value="applicant">{t('students.applicantStatus')}</option>
           </Select>
         </Field>
+        <StudentClassFields form={form} set={set} classes={classes} currentClass={currentClass} />
       </div>
     </Modal>
   );

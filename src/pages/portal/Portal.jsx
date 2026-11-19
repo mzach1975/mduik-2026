@@ -4,6 +4,7 @@ import { api } from '../../api';
 import { useI18n } from '../../i18n';
 import { useApi } from '../../hooks';
 import Icon from '../../components/Icon';
+import { placementLabel } from '../../components/StudentFields';
 import {
   Alert,
   Badge,
@@ -83,8 +84,11 @@ export default function Portal() {
               </div>
               <div className="childcard__head">
                 <span className="avatar avatar--teal">{child.full_name.split(' ').map((x) => x[0]).slice(0, 2).join('')}</span>
-                <div>
+                <div className="stack-cell">
                   <strong>{child.full_name}</strong>
+                  {(child.class_name || child.placement) && (
+                    <small className="muted">{[child.class_name, child.placement && placementLabel(t, child.placement)].filter(Boolean).join(' · ')}</small>
+                  )}
                 </div>
                 <StatusBadge status={child.status} />
               </div>

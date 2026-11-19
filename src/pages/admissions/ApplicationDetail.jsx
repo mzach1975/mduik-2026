@@ -25,6 +25,7 @@ import {
   Textarea,
   useToast,
 } from '../../components/ui';
+import { useClasses, StudentClassFields, NoClassesAlert, studentFieldsComplete, todayLocal } from '../../components/StudentFields';
 
 function parseJson(value, fallback) {
   if (!value) return fallback;
@@ -485,7 +486,8 @@ function RegisterModal({ open, onClose, onDone, app }) {
   const { t } = useI18n();
   const { push } = useToast();
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({ fullName: app.student_name || '', studentIc: '' });
+  const [form, setForm] = useState({ fullName: app.student_name || '', studentIc: '', registrationDate: todayLocal(), classId: '', placement: '' });
+  const { active: classes, loading: classesLoading } = useClasses(open);
   const [parent, setParent] = useState(() => emptyParent({ name: app.parent_name, email: app.parent_email, phone: app.parent_phone }));
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -495,6 +497,9 @@ function RegisterModal({ open, onClose, onDone, app }) {
       const res = await api.post(`/applications/${app.id}/register`, {
         fullName: form.fullName,
         studentIc: form.studentIc || undefined,
+        registrationDate: form.registrationDate,
+        classId: form.classId,
+        placement: form.placement,
         ...parentPayload(parent),
       });
       await onDone(res);
@@ -515,7 +520,7 @@ function RegisterModal({ open, onClose, onDone, app }) {
       footer={
         <>
           <button type="button" className="btn btn--ghost" onClick={onClose}>{t('common.cancel')}</button>
-          <button type="button" className="btn btn--primary" disabled={busy || !form.fullName.trim() || (needsIc && !form.studentIc.trim()) || !parentReady(parent)} onClick={submit}>
+          <button type="button" className="btn btn--primary" disabled={busy || !form.fullName.trim() || (needsIc && !form.studentIc.trim()) || !studentFieldsComplete(form) || !parentReady(parent)} onClick={submit}>
             {busy && <span className="spinner spinner--light" />} {t('applications.registerStudent')}
           </button>
         </>
@@ -528,7 +533,9 @@ function RegisterModal({ open, onClose, onDone, app }) {
         <Field label={t('common.ic')} required={needsIc} hint={needsIc ? t('students.icHint') : app.ic_masked}>
           <Input value={form.studentIc} onChange={(e) => set('studentIc', e.target.value)} placeholder={app.ic_masked || ''} disabled={!needsIc} />
         </Field>
+        <StudentClassFields form={form} set={set} classes={classes} />
       </div>
+      {!classesLoading && !classes.length && <NoClassesAlert />}
       <Alert tone="info">{t('applications.feeFromSchool')}</Alert>
       <h4 className="detaillabel">{t('applications.parentInfo')}</h4>
       <ParentPicker value={parent} onChange={setParent} />

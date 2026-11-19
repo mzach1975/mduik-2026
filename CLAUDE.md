@@ -20,6 +20,7 @@ MDUIK School Administration System: a multi-tenant system for admissions, record
 - `worker/src/lib/auth.js`: sessions, PBKDF2 passwords, IC crypto (`hashIc`, `encryptIc`), first-password sentinel, `must_change_password` gate
 - `worker/src/lib/util.js`: `normalizeIc`, `validIc`, `maskIc`, `bad`, ids
 - `worker/src/lib/migrate.js`: runtime migrations (run once per isolate before each `/api/*` request), including `migrateCr20261109`
+- `worker/src/lib/students.js`: student registration date / class / placement rules (CR-PR 2026-11-18)
 - `worker/src/lib/finance.js`: invoices, payments, credit, receipts, `ADJUSTED_RATE_SQL` / `studentMonthlyRate`
 - `src/pages/*`: React pages. `src/components/ParentPicker.jsx` is the shared IC search and duplicate UI (`kind="parent"|"teacher"`). `src/pages/auth/ForcePassword.jsx` is the forced first-password screen.
 - `src/locales/{bm,en}.js`: all UI text (BM is the default; add every key to both files)
@@ -72,6 +73,13 @@ MDUIK School Administration System: a multi-tenant system for admissions, record
 - CR-3: Super Admin can create a Super Admin in Users (`POST /users` role `super_admin`, `school_id` NULL, typed password ≥ 8 required, 400 `password_rule`). School Admin gets 403.
 - CR-4: parent portal shows all linked children across madrasahs (server was already cross-madrasah); parents get no madrasah switcher or sidebar madrasah block, no welcome title on the dashboard, no "Update contact details" (button, modal and child-page link removed; `PATCH /portal/contact` kept), no "Public site" in the profile menu.
 
+## Business rules: CR-PR 2026-11-18 (`document/CR-PR-18112026.md`)
+- CR-1: student `registration_date` (default today, not in the future, editable, audited; existing rows backfilled from `created_at`).
+- CR-2: Settings → Classes tab (School Admin CRUD): name (unique per madrasah) + description + active/inactive. A class with students cannot be deleted (409 `class_in_use`); deactivate instead.
+- CR-3/4: `students.class_id` required on Add student, registration and import (active class only); editable on the student page; class changes audited with before/after class names. Column is `class_id` because `migrateCr20261109` drops `class_name`. Class has no fee effect.
+- CR-5: `placement` `boarding|day|temp_boarding` (Asrama / Harian / Asrama Sementara), required on create, editable. Import accepts the key or the BM/EN label.
+- `document/CR-PR-18112026.txt` is a different CR (remove login page, demo data, new Super Admin) and is not implemented.
+
 ## Decisions (CR 2026-11-09)
 - Kept the `monthly_fee_cents` / `registration_fee_cents` column names.
 - Kept the peppered SHA-256 `ic_hash` (no HMAC switch yet).
@@ -85,7 +93,8 @@ MDUIK School Administration System: a multi-tenant system for admissions, record
 - 2026-11-09 (`61d3554`, `4a872d8`): implemented CR 2026-11-09 end to end (backend, `migrateCr20261109`, UI, locales, forced password screen, logo `public/images/mduik.jpg`, seed, deploy backup + test step); fixed `npm test` for Node 22 in CI. Deploy `42566803089` succeeded; on production the migration ran (marker set, 34 backup rows, `fee_plans` dropped, 4 teacher memberships). 26 tests pass.
 - 2026-11-12 (`41ff9fc`, `b0fdc7c`): custom domain `mduik.org` bound (route in wrangler.toml), `APP_URL` = https://mduik.org, secret `MAIL_FROM` = `no_reply@mduik.org` (also the code fallback). Email Service verified: test mail delivered to the owner's Gmail inbox. 33 tests pass.
 - 2026-11-14: implemented CR-PR 2026-11-14 (PR-1, PR-2, CR-1..CR-7). Production finding: 4 of 5 teachers had no `ic_hash` (IC only on the login) — root cause of PR-2. 40 tests pass. Not yet committed/deployed.
-- 2026-11-18: implemented CR-PR 2026-11-17 (CR-1..CR-4). 44 tests pass. Not yet committed/deployed.
+- 2026-11-18: implemented CR-PR 2026-11-17 (CR-1..CR-4). 44 tests pass. Committed `a5fca17`.
+- 2026-11-19: implemented CR-PR 2026-11-18 (classes, registration date, class, placement; `migrateCr20261118`). 51 tests pass. Not yet committed/deployed.
 
 ## Next steps
 1. Download the `d1-backup-4a872d8…` artifact from run `42566803089` and store it permanently (expires after 30 days).

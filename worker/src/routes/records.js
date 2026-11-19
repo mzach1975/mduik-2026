@@ -18,6 +18,7 @@ import { audit, auditView } from '../lib/audit.js';
 import { notifyParentsOfStudent, subjectFor } from '../lib/notify.js';
 import { studentBalance, createInvoice, dueDateFor, ADJUSTED_RATE_SQL, monthlyRate, studentMonthlyRate } from '../lib/finance.js';
 import { buildReceiptPdf } from '../lib/pdf.js';
+import { PLACEMENTS, newStudentFields, activeClass, registrationDateError, studentFieldMessage } from '../lib/students.js';
 
 const records = new Hono();
 records.use('*', authMiddleware);
@@ -42,10 +43,18 @@ records.get('/students', staffOnly, async (c) => {
   }
   if (c.req.query('tracking') === 'on') where.push('s.monthly_tracking = 1');
   if (c.req.query('tracking') === 'off') where.push('s.monthly_tracking = 0');
+  if (c.req.query('classId')) {
+    where.push('s.class_id = ?');
+    binds.push(c.req.query('classId'));
+  }
+  if (PLACEMENTS.includes(c.req.query('placement'))) {
+    where.push('s.placement = ?');
+    binds.push(c.req.query('placement'));
+  }
   const w = where.join(' AND ');
   const count = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM students s WHERE ${w}`).bind(...binds).first();
   const { results } = await c.env.DB.prepare(
-    `SELECT s.*, ${ADJUSTED_RATE_SQL} AS adjusted_rate,
+    `SELECT s.*, ${ADJUSTED_RATE_SQL} AS adjusted_rate, (SELECT cl.name FROM classes cl WHERE cl.id = s.class_id) AS class_name,
        (SELECT COALESCE(SUM(i.amount_cents - i.paid_cents - i.credited_cents - i.waived_cents),0)
         FROM invoices i WHERE i.student_id = s.id AND i.status IN ('unpaid','partial')) AS outstanding,
        (SELECT COALESCE(SUM(cr.remaining_cents),0) FROM credits cr WHERE cr.student_id = s.id) AS credit
@@ -69,7 +78,10 @@ function publicStudent(s, school) {
 records.get('/students/:id', staffOnly, async (c) => {
   const auth = c.get('auth');
   const studentId = c.req.param('id');
-  const student = await c.env.DB.prepare(`SELECT s.*, ${ADJUSTED_RATE_SQL} AS adjusted_rate FROM students s WHERE s.id = ? AND s.school_id = ?`)
+  const student = await c.env.DB.prepare(
+    `SELECT s.*, ${ADJUSTED_RATE_SQL} AS adjusted_rate, (SELECT cl.name FROM classes cl WHERE cl.id = s.class_id) AS class_name
+     FROM students s WHERE s.id = ? AND s.school_id = ?`,
+  )
     .bind(studentId, auth.activeSchool)
     .first();
   if (!student) return bad('Pelajar tidak dijumpai. / Student not found.', 404);
@@ -113,6 +125,9 @@ records.post('/students', requireRoles('school_admin'), async (c) => {
   if (icError) return icError;
   const status = body.status || 'active';
   if (!['active', 'withdrawn', 'graduated', 'applicant'].includes(status)) return bad('Status tidak sah. / Invalid status.');
+  const fields = await newStudentFields(c.env, auth.activeSchool, body);
+  if (fields.error) return fields.error;
+  const { class_name: className, ...extra } = fields.values;
   const ic = await encryptIc(c.env, body.ic);
   // Students are not unique by IC (warn only): the admin confirms to continue.
   const matches = await studentIcMatches(c.env, ic.hash, auth.activeSchool);
@@ -122,8 +137,8 @@ records.post('/students', requireRoles('school_admin'), async (c) => {
   const studentId = id('std');
   await c.env.DB.prepare(
     `INSERT INTO students (id, school_id, full_name, ic_hash, ic_enc, ic_masked, dob, gender, address,
-      monthly_fee_cents, monthly_tracking, tracking_start, status, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?,?)`,
+      monthly_fee_cents, monthly_tracking, tracking_start, status, registration_date, class_id, placement, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?)`,
   )
     .bind(
       studentId,
@@ -138,10 +153,15 @@ records.post('/students', requireRoles('school_admin'), async (c) => {
       body.monthlyTracking ? 1 : 0,
       body.monthlyTracking ? nextMonthStart() : null,
       status,
+      extra.registration_date,
+      extra.class_id,
+      extra.placement,
       nowIso(),
     )
     .run();
-  await audit(c, 'create', 'student', studentId, { after: { fullName, icDuplicateConfirmed: matches.length > 0 } });
+  await audit(c, 'create', 'student', studentId, {
+    after: { fullName, icDuplicateConfirmed: matches.length > 0, ...extra, class_name: className },
+  });
   return json({ id: studentId }, 201);
 });
 
@@ -185,6 +205,28 @@ records.patch('/students/:id', requireRoles('school_admin'), async (c) => {
   for (const f of allowed) if (body[f] !== undefined) updates[f] = body[f];
   if (updates.full_name !== undefined && !String(updates.full_name).trim()) return bad('Nama pelajar diperlukan. / Student name is required.');
   if (body.status && !['active', 'withdrawn', 'graduated', 'applicant'].includes(body.status)) return bad('Status tidak sah. / Invalid status.');
+  // CR-PR 2026-11-18: class (required once sent), placement and registration date; class changes are audited by name.
+  let classNames = null;
+  if (body.classId !== undefined) {
+    if (!body.classId) return bad(studentFieldMessage('class_required'), 400, { code: 'class_required' });
+    if (body.classId !== student.class_id) {
+      const cls = await activeClass(c.env, auth.activeSchool, body.classId);
+      if (!cls) return bad(studentFieldMessage('class_invalid'), 400, { code: 'class_invalid' });
+      const old = student.class_id ? await c.env.DB.prepare('SELECT name FROM classes WHERE id = ?').bind(student.class_id).first() : null;
+      classNames = { before: old?.name || null, after: cls.name };
+      updates.class_id = cls.id;
+    }
+  }
+  if (body.placement !== undefined) {
+    if (!body.placement) return bad(studentFieldMessage('placement_required'), 400, { code: 'placement_required' });
+    if (!PLACEMENTS.includes(body.placement)) return bad(studentFieldMessage('placement_invalid'), 400, { code: 'placement_invalid' });
+    if (body.placement !== student.placement) updates.placement = body.placement;
+  }
+  if (body.registrationDate !== undefined) {
+    const err = registrationDateError(body.registrationDate);
+    if (err) return bad(studentFieldMessage(err), 400, { code: err });
+    if (body.registrationDate !== student.registration_date) updates.registration_date = body.registrationDate;
+  }
   if (body.ic !== undefined) {
     const icError = studentIcError(body.ic);
     if (icError) return icError;
@@ -200,7 +242,98 @@ records.patch('/students/:id', requireRoles('school_admin'), async (c) => {
     .run();
   const before = {};
   for (const k of Object.keys(updates)) before[k] = student[k];
-  await audit(c, 'update', 'student', studentId, { before, after: updates });
+  const after = { ...updates };
+  if (classNames) {
+    before.class_name = classNames.before;
+    after.class_name = classNames.after;
+  }
+  await audit(c, 'update', 'student', studentId, { before, after });
+  return json({ ok: true });
+});
+
+/* ------------------------------ Classes (CR-PR 2026-11-18) ------------------------------ */
+// A class is a label on the student (no fee effect). Names are unique per school (case-insensitive).
+const CLASS_NOT_FOUND = 'Kelas tidak dijumpai. / Class not found.';
+
+function classInput(body) {
+  const name = String(body.name ?? '').trim().slice(0, 80);
+  const description = String(body.description ?? '').trim().slice(0, 300);
+  return { name, description };
+}
+
+async function classNameTaken(env, schoolId, name, excludeId = '') {
+  return env.DB.prepare('SELECT 1 AS ok FROM classes WHERE school_id = ? AND lower(name) = lower(?) AND id != ?').bind(schoolId, name, excludeId).first();
+}
+
+const CLASS_EXISTS = 'Nama kelas sudah wujud di madrasah ini. / A class with this name already exists at this madrasah.';
+
+records.get('/classes', staffOnly, async (c) => {
+  const auth = c.get('auth');
+  const { results } = await c.env.DB.prepare(
+    `SELECT cl.*, (SELECT COUNT(*) FROM students s WHERE s.class_id = cl.id) AS student_count
+     FROM classes cl WHERE cl.school_id = ? ORDER BY cl.status, lower(cl.name)`,
+  )
+    .bind(auth.activeSchool)
+    .all();
+  return json({ classes: results });
+});
+
+records.post('/classes', requireRoles('school_admin'), async (c) => {
+  const auth = c.get('auth');
+  const { name, description } = classInput(await readJson(c));
+  if (!name) return bad('Nama kelas diperlukan. / Class name is required.', 400, { code: 'name_required' });
+  if (await classNameTaken(c.env, auth.activeSchool, name)) return bad(CLASS_EXISTS, 409, { code: 'class_exists' });
+  const classId = id('cls');
+  await c.env.DB.prepare("INSERT INTO classes (id, school_id, name, description, status, created_at) VALUES (?,?,?,?,'active',?)")
+    .bind(classId, auth.activeSchool, name, description || null, nowIso())
+    .run();
+  await audit(c, 'create', 'class', classId, { after: { name, description } });
+  return json({ id: classId }, 201);
+});
+
+records.patch('/classes/:id', requireRoles('school_admin'), async (c) => {
+  const auth = c.get('auth');
+  const cls = await c.env.DB.prepare('SELECT * FROM classes WHERE id = ? AND school_id = ?').bind(c.req.param('id'), auth.activeSchool).first();
+  if (!cls) return bad(CLASS_NOT_FOUND, 404);
+  const body = await readJson(c);
+  const updates = {};
+  if (body.name !== undefined) {
+    const { name } = classInput(body);
+    if (!name) return bad('Nama kelas diperlukan. / Class name is required.', 400, { code: 'name_required' });
+    if (await classNameTaken(c.env, auth.activeSchool, name, cls.id)) return bad(CLASS_EXISTS, 409, { code: 'class_exists' });
+    if (name !== cls.name) updates.name = name;
+  }
+  if (body.description !== undefined) {
+    const description = classInput(body).description || null;
+    if (description !== cls.description) updates.description = description;
+  }
+  if (body.status !== undefined) {
+    if (!['active', 'inactive'].includes(body.status)) return bad('Status tidak sah. / Invalid status.');
+    if (body.status !== cls.status) updates.status = body.status;
+  }
+  if (!Object.keys(updates).length) return json({ ok: true });
+  const sets = Object.keys(updates).map((k) => `${k} = ?`).join(', ');
+  await c.env.DB.prepare(`UPDATE classes SET ${sets}, updated_at = ? WHERE id = ?`).bind(...Object.values(updates), nowIso(), cls.id).run();
+  const before = {};
+  for (const k of Object.keys(updates)) before[k] = cls[k];
+  await audit(c, 'update', 'class', cls.id, { before, after: updates });
+  return json({ ok: true });
+});
+
+records.delete('/classes/:id', requireRoles('school_admin'), async (c) => {
+  const auth = c.get('auth');
+  const cls = await c.env.DB.prepare('SELECT * FROM classes WHERE id = ? AND school_id = ?').bind(c.req.param('id'), auth.activeSchool).first();
+  if (!cls) return bad(CLASS_NOT_FOUND, 404);
+  const used = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM students WHERE class_id = ?').bind(cls.id).first();
+  if (used?.n) {
+    return bad(
+      `Kelas ini mempunyai ${used.n} pelajar. Pindahkan pelajar atau nyahaktifkan kelas. / This class has ${used.n} students. Move them or deactivate the class.`,
+      409,
+      { code: 'class_in_use', students: used.n },
+    );
+  }
+  await c.env.DB.prepare('DELETE FROM classes WHERE id = ?').bind(cls.id).run();
+  await audit(c, 'delete', 'class', cls.id, { before: { name: cls.name, description: cls.description, status: cls.status } });
   return json({ ok: true });
 });
 
@@ -785,7 +918,8 @@ records.get('/portal/children', requireRoles('parent'), async (c) => {
   const auth = c.get('auth');
   if (!auth.parent) return json({ children: [], schools: [], totalOutstanding: 0 });
   const { results: children } = await c.env.DB.prepare(
-    `SELECT s.id, s.full_name, s.status, s.school_id, sc.name AS school_name, sc.category,
+    `SELECT s.id, s.full_name, s.status, s.school_id, s.placement, sc.name AS school_name, sc.category,
+       (SELECT cl.name FROM classes cl WHERE cl.id = s.class_id) AS class_name,
        (SELECT COALESCE(SUM(i.amount_cents - i.paid_cents - i.credited_cents - i.waived_cents),0)
         FROM invoices i WHERE i.student_id = s.id AND i.school_id = s.school_id AND i.status IN ('unpaid','partial')) AS outstanding,
        (SELECT COALESCE(SUM(cr.remaining_cents),0) FROM credits cr WHERE cr.student_id = s.id AND cr.school_id = s.school_id) AS credit
@@ -835,7 +969,7 @@ records.get('/portal/children/:id', requireRoles('parent'), async (c) => {
     .bind(auth.parent?.id, studentId)
     .first();
   if (!link) return bad('Forbidden', 403);
-  const student = await c.env.DB.prepare('SELECT s.*, sc.name AS school_name, sc.bank_name, sc.bank_account, sc.payment_instructions_bm, sc.payment_instructions_en FROM students s JOIN schools sc ON sc.id = s.school_id WHERE s.id = ?')
+  const student = await c.env.DB.prepare('SELECT s.*, (SELECT cl.name FROM classes cl WHERE cl.id = s.class_id) AS class_name, sc.name AS school_name, sc.bank_name, sc.bank_account, sc.payment_instructions_bm, sc.payment_instructions_en FROM students s JOIN schools sc ON sc.id = s.school_id WHERE s.id = ?')
     .bind(studentId)
     .first();
   const invoices = await c.env.DB.prepare('SELECT * FROM invoices WHERE student_id = ? ORDER BY issue_date DESC')

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { useAuth } from '../auth';
 import { useI18n } from '../i18n';
@@ -9,6 +9,9 @@ import {
   Alert,
   Badge,
   Card,
+  ConfirmDialog,
+  DataTable,
+  EmptyState,
   Field,
   Input,
   Loading,
@@ -26,10 +29,12 @@ export default function Settings() {
   const { push } = useToast();
   const canSchool = user?.isSuper || user?.role === 'school_admin';
   const hasSchool = Boolean(user?.activeSchool);
-  const [tab, setTab] = useState(canSchool && hasSchool ? 'school' : 'account');
+  const [params] = useSearchParams();
+  const schoolTabs = canSchool && hasSchool;
+  const [tab, setTab] = useState(schoolTabs ? (params.get('tab') === 'classes' ? 'classes' : 'school') : 'account');
 
   const tabs = [
-    ...(canSchool && hasSchool ? [{ id: 'school', label: t('settings.schoolTab') }] : []),
+    ...(schoolTabs ? [{ id: 'school', label: t('settings.schoolTab') }, { id: 'classes', label: t('classes.tab') }] : []),
     { id: 'account', label: t('settings.accountTab') },
   ];
 
@@ -41,8 +46,139 @@ export default function Settings() {
       </div>
 
       {tab === 'school' && <SchoolSettings />}
+      {tab === 'classes' && <ClassSettings />}
       {tab === 'account' && <AccountSettings lang={lang} setLang={setLang} patchUser={patchUser} push={push} />}
     </>
+  );
+}
+
+/** CR-PR 2026-11-18: the school's classes (School Admin). A class with students can only be deactivated. */
+function ClassSettings() {
+  const { t, number } = useI18n();
+  const { push } = useToast();
+  const { data, loading, reload } = useApi('/classes');
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({ name: '', description: '' });
+  const [deleting, setDeleting] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const classes = data?.classes || [];
+
+  function open(cls) {
+    setEditing(cls || 'new');
+    setForm({ name: cls?.name || '', description: cls?.description || '' });
+  }
+
+  async function run(fn, message) {
+    setBusy(true);
+    try {
+      await fn();
+      push(message);
+      setEditing(null);
+      setDeleting(null);
+      await reload(true);
+    } catch (err) {
+      push(err.message, 'danger');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const save = () =>
+    run(
+      () => (editing === 'new' ? api.post('/classes', form) : api.patch(`/classes/${editing.id}`, form)),
+      editing === 'new' ? t('classes.created') : t('classes.updated'),
+    );
+
+  return (
+    <Card
+      padded={false}
+      title={t('classes.title')}
+      subtitle={t('classes.subtitle')}
+      actions={
+        <button type="button" className="btn btn--primary btn--sm" onClick={() => open(null)}>
+          <Icon name="plus" size={16} /> {t('classes.add')}
+        </button>
+      }
+    >
+      {!loading && !classes.length ? (
+        <EmptyState icon="file" title={t('classes.empty')}>{t('classes.emptyHint')}</EmptyState>
+      ) : (
+        <DataTable
+          rows={classes}
+          loading={loading}
+          columns={[
+            { key: 'name', label: t('classes.name'), render: (r) => <strong>{r.name}</strong> },
+            { key: 'description', label: t('classes.description'), render: (r) => r.description || '—' },
+            { key: 'student_count', label: t('classes.students'), align: 'right', render: (r) => number(r.student_count) },
+            {
+              key: 'status',
+              label: t('common.status'),
+              render: (r) => <Badge tone={r.status === 'active' ? 'green' : 'slate'} dot>{r.status === 'active' ? t('common.active') : t('common.inactive')}</Badge>,
+            },
+            {
+              key: 'actions',
+              label: '',
+              align: 'right',
+              render: (r) => (
+                <span className="buttonrow">
+                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => open(r)}>{t('common.edit')}</button>
+                  <button
+                    type="button"
+                    className="btn btn--ghost btn--sm"
+                    disabled={busy}
+                    onClick={() => run(() => api.patch(`/classes/${r.id}`, { status: r.status === 'active' ? 'inactive' : 'active' }), t('classes.updated'))}
+                  >
+                    {r.status === 'active' ? t('classes.deactivate') : t('classes.activate')}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--ghost btn--sm btn--danger-text"
+                    disabled={r.student_count > 0}
+                    title={r.student_count > 0 ? t('classes.inUse') : undefined}
+                    onClick={() => setDeleting(r)}
+                  >
+                    {t('common.delete')}
+                  </button>
+                </span>
+              ),
+            },
+          ]}
+        />
+      )}
+
+      <Modal
+        open={Boolean(editing)}
+        onClose={() => setEditing(null)}
+        title={editing === 'new' ? t('classes.add') : t('classes.edit')}
+        footer={
+          <>
+            <button type="button" className="btn btn--ghost" onClick={() => setEditing(null)}>{t('common.cancel')}</button>
+            <button type="button" className="btn btn--primary" onClick={save} disabled={busy || !form.name.trim()}>
+              {busy && <span className="spinner spinner--light" />} {t('common.save')}
+            </button>
+          </>
+        }
+      >
+        <div className="formgrid">
+          <Field label={t('classes.name')} required className="formgrid__full">
+            <Input value={form.name} maxLength={80} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+          </Field>
+          <Field label={t('classes.description')} className="formgrid__full">
+            <Textarea rows={2} maxLength={300} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+          </Field>
+        </div>
+      </Modal>
+
+      <ConfirmDialog
+        open={Boolean(deleting)}
+        onClose={() => setDeleting(null)}
+        busy={busy}
+        title={t('classes.deleteTitle')}
+        message={t('classes.deleteConfirm', { name: deleting?.name || '' })}
+        confirmLabel={t('common.delete')}
+        onConfirm={() => run(() => api.del(`/classes/${deleting.id}`), t('classes.deleted'))}
+      />
+    </Card>
   );
 }
 
