@@ -522,3 +522,17 @@ CREATE TABLE IF NOT EXISTS migration_backups (
   data_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+-- Global email notification templates (CR-PR 2026-11-20). Defaults are in
+-- worker/src/lib/templates.js; a row overrides the text and/or switches the
+-- email off. Deleting the row restores the default.
+CREATE TABLE IF NOT EXISTS email_templates (
+  key TEXT PRIMARY KEY,
+  subject_bm TEXT,
+  subject_en TEXT,
+  body_bm TEXT,
+  body_en TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT,
+  updated_by TEXT
+);

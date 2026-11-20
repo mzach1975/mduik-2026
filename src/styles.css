@@ -2154,3 +2154,17 @@ ul, ol { margin: 0; padding: 0; }
   body { background: #fff; }
   .card { box-shadow: none; border-color: #ccc; break-inside: avoid; }
 }
+
+/* Email templates (CR-PR 2026-11-20) */
+.switch { position: relative; display: inline-flex; cursor: pointer; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch__track { width: 38px; height: 22px; border-radius: 999px; background: var(--line); transition: background 0.15s; position: relative; }
+.switch__thumb { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); transition: transform 0.15s; }
+.switch input:checked + .switch__track { background: var(--brand-500); }
+.switch input:checked + .switch__track .switch__thumb { transform: translateX(16px); }
+.switch input:focus-visible + .switch__track { outline: 2px solid var(--gold); outline-offset: 2px; }
+.switch--disabled { cursor: not-allowed; opacity: 0.6; }
+.tplvar { display: inline-block; margin: 2px 6px 2px 0; padding: 1px 6px; border-radius: 6px; background: var(--bg-warm); border: 1px solid var(--line-soft); font-size: 12px; }
+.tplpreview { border: 1px solid var(--line); border-radius: 10px; background: var(--bg-warm); padding: 12px 14px; }
+.tplpreview__subject { font-weight: 700; margin-bottom: 8px; color: var(--ink); }
+.tplpreview__body { white-space: pre-wrap; color: var(--ink-2); font-size: 14px; }

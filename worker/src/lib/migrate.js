@@ -1,4 +1,6 @@
 import { normalizePhone } from './people.js';
+import { encryptIc, hashPassword } from './auth.js';
+import { id, nowIso, normalizeIc, validIc } from './util.js';
 
 /**
  * schema.sql only creates missing tables, so columns added to (or removed
@@ -128,7 +130,81 @@ async function migrate(env) {
   await backfillPhoneNorm(db, 'parents');
   await migrateCr20261109(db);
   await migrateCr20261118(db);
+  await migrateCr20261120(db);
+  await bootstrapSuperAdmin(env);
 }
+
+/**
+ * CR-PR 2026-11-20 CR-8: create the first Super Admin from the BOOTSTRAP_ADMIN
+ * secret when the database has no active Super Admin (for example after the
+ * data reset). The secret is JSON {fullName, email, phone, ic, language,
+ * password}; it uses the Worker's own IC key and pepper, so IC login and
+ * search work. The login must change its password on first sign-in. Delete
+ * the secret once the account exists.
+ */
+async function bootstrapSuperAdmin(env) {
+  if (!env.BOOTSTRAP_ADMIN) return;
+  const db = env.DB;
+  const exists = await db
+    .prepare("SELECT 1 AS ok FROM user_roles WHERE role = 'super_admin' AND status = 'active' LIMIT 1")
+    .first();
+  if (exists) return;
+  let cfg;
+  try {
+    cfg = typeof env.BOOTSTRAP_ADMIN === 'string' ? JSON.parse(env.BOOTSTRAP_ADMIN) : env.BOOTSTRAP_ADMIN;
+  } catch {
+    console.error('BOOTSTRAP_ADMIN is not valid JSON');
+    return;
+  }
+  const email = String(cfg.email || '').trim().toLowerCase();
+  const ic = normalizeIc(cfg.ic);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !validIc(ic) || String(cfg.password || '').length < 8 || !cfg.fullName) {
+    console.error('BOOTSTRAP_ADMIN needs fullName, a valid email and IC, and a password of at least 8 characters');
+    return;
+  }
+  if (await db.prepare('SELECT 1 AS ok FROM users WHERE lower(email) = ?').bind(email).first()) {
+    console.error('BOOTSTRAP_ADMIN email already belongs to a user; not created');
+    return;
+  }
+  const icData = await encryptIc(env, ic);
+  const userId = id('usr');
+  const now = nowIso();
+  await db.batch([
+    db.prepare(
+      `INSERT INTO users (id, email, full_name, ic_hash, ic_enc, ic_masked, phone, password_hash, language, status, must_change_password, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?, 'active', 1, ?)`,
+    ).bind(userId, email, String(cfg.fullName).trim(), icData.hash, icData.enc, icData.masked, String(cfg.phone || ''),
+      await hashPassword(String(cfg.password)), cfg.language === 'en' ? 'en' : 'bm', now),
+    db.prepare("INSERT INTO user_roles (id, user_id, school_id, role, started_at, status) VALUES (?, ?, NULL, 'super_admin', ?, 'active')")
+      .bind(id('url'), userId, now),
+  ]);
+  console.log('BOOTSTRAP_ADMIN: Super Admin created', userId);
+}
+
+/**
+ * CR-PR 2026-11-20: global email templates (CR-1/CR-2), audit log retention of
+ * 3 months (CR-3) and no migration backups kept once a migration has finished
+ * (CR-7: rows of every migration whose `migration:<name>` marker is set).
+ */
+async function migrateCr20261120(db) {
+  await db.batch([
+    db.prepare(`CREATE TABLE IF NOT EXISTS email_templates (
+      key TEXT PRIMARY KEY,
+      subject_bm TEXT, subject_en TEXT, body_bm TEXT, body_en TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT, updated_by TEXT)`),
+    db.prepare(
+      `UPDATE retention_config SET months = ${AUDIT_RETENTION_MONTHS}, description_bm = 'Log audit: 3 bulan', description_en = 'Audit log: 3 months'
+       WHERE data_type = 'audit_log' AND (months IS NULL OR months != ${AUDIT_RETENTION_MONTHS})`,
+    ),
+    db.prepare(
+      "DELETE FROM migration_backups WHERE migration IN (SELECT substr(key, 11) FROM settings WHERE key LIKE 'migration:%')",
+    ),
+  ]);
+}
+
+/** CR-PR 2026-11-20 CR-3: audit entries older than this are deleted by the daily job. */
+export const AUDIT_RETENTION_MONTHS = 3;
 
 /**
  * CR-PR 2026-11-18: classes, and registration date / class / placement on

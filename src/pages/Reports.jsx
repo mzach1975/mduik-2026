@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { downloadFile } from '../api';
+import { useAuth } from '../auth';
 import { useI18n } from '../i18n';
 import { useApi, todayIso, yearStartIso } from '../hooks';
 import Icon from '../components/Icon';
@@ -36,6 +37,11 @@ export default function Reports() {
   const [selected, setSelected] = useState('');
   const [from, setFrom] = useState(yearStartIso());
   const [to, setTo] = useState(todayIso());
+  const { user } = useAuth();
+  const isSuper = !!user?.isSuper;
+  const [school, setSchool] = useState('all');
+  const { data: schoolData } = useApi('/schools', { enabled: isSuper });
+  const schools = schoolData?.schools || [];
   const { data: listData } = useApi('/reports');
   const reports = listData?.reports || [];
 
@@ -43,7 +49,8 @@ export default function Reports() {
     if (reports.length && !reports.includes(selected)) setSelected(reports[0]);
   }, [listData, selected]);
 
-  const path = selected ? `/reports/${selected}?from=${from}&to=${to}` : null;
+  const query = `from=${from}&to=${to}${isSuper ? `&school=${encodeURIComponent(school)}` : ''}`;
+  const path = selected ? `/reports/${selected}?${query}` : null;
   const { data, loading, error, reload } = useApi(path, { enabled: !!path });
   const report = data;
 
@@ -93,6 +100,16 @@ export default function Reports() {
         <div className="stack">
           <Card>
             <div className="reportfilters">
+              {isSuper && selected !== 'state-consolidated' && (
+                <Field label={t('reports.madrasah')}>
+                  <Select value={school} onChange={(e) => setSchool(e.target.value)}>
+                    <option value="all">{t('reports.allMadrasahs')}</option>
+                    {schools.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </Select>
+                </Field>
+              )}
               <Field label={t('common.fromDate')}>
                 <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
               </Field>
@@ -104,9 +121,9 @@ export default function Reports() {
                   <Icon name="refresh" size={15} /> {t('reports.generate')}
                 </button>
                 <span className="export-group">
-                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => downloadFile(`/reports/${selected}?from=${from}&to=${to}&format=csv`)}>CSV</button>
-                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => downloadFile(`/reports/${selected}?from=${from}&to=${to}&format=xls`)}>Excel</button>
-                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => downloadFile(`/reports/${selected}?from=${from}&to=${to}&format=pdf`)}>PDF</button>
+                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => downloadFile(`/reports/${selected}?${query}&format=csv`)}>CSV</button>
+                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => downloadFile(`/reports/${selected}?${query}&format=xls`)}>Excel</button>
+                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => downloadFile(`/reports/${selected}?${query}&format=pdf`)}>PDF</button>
                 </span>
               </div>
             </div>

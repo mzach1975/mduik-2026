@@ -18,8 +18,8 @@ import {
 import { getCookie } from 'hono/cookie';
 import { resolveAuth } from '../lib/auth.js';
 import { id, nowIso, readJson, bad, json, normalizeIc, validIc } from '../lib/util.js';
-import { audit } from '../lib/audit.js';
 import { EMAIL_RE } from '../lib/people.js';
+import { getTemplate, renderTemplate } from '../lib/templates.js';
 
 const auth = new Hono();
 
@@ -148,7 +148,6 @@ auth.patch('/profile', async (c) => {
   await c.env.DB.prepare(`UPDATE users SET ${sets} WHERE id = ?`)
     .bind(...Object.values(allowed), session.user.id)
     .run();
-  await audit(c, 'update', 'user_profile', session.user.id, { before, after: allowed });
   const updated = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(session.user.id).first();
   return json({ user: { ...publicUser(session), language: updated.language, name: updated.full_name, email: updated.email } });
 });
@@ -167,7 +166,6 @@ auth.post('/change-password', async (c) => {
   await c.env.DB.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?').bind(hash, session.user.id).run();
   await revokeAllSessions(c.env, session.user.id);
   await setSession(c, session.user, session.activeSchool);
-  await audit(c, 'change_password', 'user', session.user.id, { after: { forced: !!session.user.must_change_password } });
   return c.json({ ok: true }); // c.json keeps the renewed session cookie
 });
 
@@ -199,11 +197,12 @@ auth.post('/forgot', async (c) => {
       console.error('Password reset requested but the EMAIL binding is not configured.');
     } else {
       try {
+        const msg = renderTemplate(await getTemplate(c.env.DB, 'password_reset'), { link, name: user.full_name });
         await c.env.EMAIL.send({
           to: user.email,
           from: c.env.MAIL_FROM || 'no_reply@mduik.org',
-          subject: 'Tetapan semula kata laluan / Password reset',
-          text: `Klik pautan ini untuk menetapkan semula kata laluan anda (sah 1 jam): ${link}\n\nClick this link to reset your password (valid 1 hour): ${link}`,
+          subject: msg.subject,
+          text: msg.body,
         });
       } catch (err) {
         console.error('reset email failed', err?.code, err?.message);

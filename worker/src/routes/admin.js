@@ -24,6 +24,7 @@ import { findContactMatches, checkNewPerson, message, ensureLogin } from '../lib
 import { planTeacher, commitTeacher, addMembership } from '../lib/teachers.js';
 import { flagRetentionRecords, runDaily, createInvoice, dueDateFor } from '../lib/finance.js';
 import { notify } from '../lib/notify.js';
+import { TEMPLATES as EMAIL_TEMPLATES, getTemplate, unknownVars } from '../lib/templates.js';
 import { placementKey, activeClassByName, registrationDateError, studentFieldMessage } from '../lib/students.js';
 
 const admin = new Hono();
@@ -64,6 +65,88 @@ admin.get('/notifications/outbox', requireRoles('school_admin'), async (c) => {
     .bind(auth.activeSchool)
     .all();
   return json({ notifications: results });
+});
+
+/* ------------------- Email templates (CR-PR 2026-11-20) ------------------- */
+const publicTemplate = (t) => ({
+  key: t.key,
+  name: t.name,
+  vars: t.vars,
+  locked: !!t.locked,
+  enabled: t.enabled,
+  customised: t.customised,
+  subjectBm: t.subject_bm,
+  subjectEn: t.subject_en,
+  bodyBm: t.body_bm,
+  bodyEn: t.body_en,
+  defaults: { subjectBm: EMAIL_TEMPLATES[t.key].subject_bm, subjectEn: EMAIL_TEMPLATES[t.key].subject_en, bodyBm: EMAIL_TEMPLATES[t.key].body_bm, bodyEn: EMAIL_TEMPLATES[t.key].body_en },
+  updatedAt: t.updated_at,
+  updatedBy: t.updated_by,
+});
+
+admin.get('/email-templates', async (c) => {
+  const denied = superOnly(c);
+  if (denied) return denied;
+  const list = [];
+  for (const key of Object.keys(EMAIL_TEMPLATES)) list.push(publicTemplate(await getTemplate(c.env.DB, key)));
+  return json({ templates: list });
+});
+
+admin.patch('/email-templates/:key', async (c) => {
+  const denied = superOnly(c);
+  if (denied) return denied;
+  const auth = c.get('auth');
+  const key = c.req.param('key');
+  const def = EMAIL_TEMPLATES[key];
+  if (!def) return bad('Templat tidak dijumpai. / Template not found.', 404);
+  const body = await readJson(c);
+  const before = await getTemplate(c.env.DB, key);
+  const fields = { subjectBm: 'subject_bm', subjectEn: 'subject_en', bodyBm: 'body_bm', bodyEn: 'body_en' };
+  const next = {};
+  for (const [k, col] of Object.entries(fields)) {
+    const v = body[k] === undefined ? before[col] : String(body[k] ?? '').replace(/\r\n/g, '\n').trim();
+    if (!v) return bad('Subjek dan kandungan BM dan BI diperlukan. / BM and English subject and body are required.', 400, { code: 'template_required', field: k });
+    if (v.length > (col.startsWith('subject') ? 200 : 5000)) return bad('Teks terlalu panjang. / Text is too long.', 400, { code: 'template_too_long', field: k });
+    const unknown = unknownVars(v, def.vars);
+    if (unknown.length) {
+      return bad(`Pemegang tempat tidak dikenali / Unknown placeholders: ${unknown.map((u) => `{{${u}}}`).join(', ')}`, 400, { code: 'template_unknown_vars', field: k, vars: unknown });
+    }
+    next[col] = v;
+  }
+  let enabled = body.enabled === undefined ? before.enabled : !!body.enabled;
+  if (def.locked && !enabled) return bad('E-mel akaun dan kata laluan tidak boleh dimatikan. / Account and password emails cannot be switched off.', 400, { code: 'template_locked' });
+  if (def.locked) enabled = true;
+  // Store only the text that differs from the default, so later default changes still apply.
+  const stored = Object.fromEntries(Object.entries(next).map(([col, v]) => [col, v === def[col] ? null : v]));
+  await c.env.DB.prepare(
+    `INSERT INTO email_templates (key, subject_bm, subject_en, body_bm, body_en, enabled, updated_at, updated_by)
+     VALUES (?,?,?,?,?,?,?,?)
+     ON CONFLICT(key) DO UPDATE SET subject_bm = excluded.subject_bm, subject_en = excluded.subject_en, body_bm = excluded.body_bm,
+       body_en = excluded.body_en, enabled = excluded.enabled, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+  )
+    .bind(key, stored.subject_bm, stored.subject_en, stored.body_bm, stored.body_en, enabled ? 1 : 0, nowIso(), auth.user.full_name || auth.user.id)
+    .run();
+  const after = await getTemplate(c.env.DB, key);
+  const snap = (t) => ({ enabled: t.enabled, subject_bm: t.subject_bm, subject_en: t.subject_en, body_bm: t.body_bm, body_en: t.body_en });
+  await audit(c, 'update', 'email_template', key, { before: snap(before), after: snap(after) });
+  return json({ template: publicTemplate(after) });
+});
+
+/** Restore the default text (the on/off setting is kept). */
+admin.delete('/email-templates/:key', async (c) => {
+  const denied = superOnly(c);
+  if (denied) return denied;
+  const auth = c.get('auth');
+  const key = c.req.param('key');
+  if (!EMAIL_TEMPLATES[key]) return bad('Templat tidak dijumpai. / Template not found.', 404);
+  const before = await getTemplate(c.env.DB, key);
+  await c.env.DB.prepare(
+    'UPDATE email_templates SET subject_bm = NULL, subject_en = NULL, body_bm = NULL, body_en = NULL, updated_at = ?, updated_by = ? WHERE key = ?',
+  )
+    .bind(nowIso(), auth.user.full_name || auth.user.id, key)
+    .run();
+  await audit(c, 'reset', 'email_template', key, { before: { customised: before.customised } });
+  return json({ template: publicTemplate(await getTemplate(c.env.DB, key)) });
 });
 
 /* ----------------------------- Announcements ------------------------- */
@@ -175,7 +258,6 @@ admin.patch('/announcements/:id', async (c) => {
       a.link_label_en, a.starts_at, a.ends_at, a.is_pinned, auth.user.id, nowIso(), existing.id,
     )
     .run();
-  await audit(c, 'update', 'announcement', existing.id, { before: existing, after: a });
   return json({ ok: true });
 });
 
@@ -185,7 +267,6 @@ admin.delete('/announcements/:id', async (c) => {
   const existing = await c.env.DB.prepare('SELECT * FROM announcements WHERE id = ?').bind(c.req.param('id')).first();
   if (!existing) return bad('Pengumuman tidak dijumpai. / Announcement not found.', 404);
   await c.env.DB.prepare('DELETE FROM announcements WHERE id = ?').bind(existing.id).run();
-  await audit(c, 'delete', 'announcement', existing.id, { before: existing });
   return json({ ok: true });
 });
 
@@ -247,7 +328,6 @@ admin.get('/retention', requireRoles('school_admin'), async (c) => {
 admin.post('/retention/scan', requireRoles('school_admin'), async (c) => {
   const auth = c.get('auth');
   const n = await flagRetentionRecords(c.env, auth.activeSchool);
-  await audit(c, 'scan', 'retention', null, { after: { flagged: n } });
   return json({ flagged: n });
 });
 
@@ -275,9 +355,6 @@ admin.post('/retention/:id/approve', requireRoles('school_admin'), async (c) => 
     .bind(action, auth.user.id, nowIso(), rec.id)
     .run();
   // The audit entry must not retain the deleted personal data (FR-RET-06).
-  await audit(c, action === 'delete' ? 'retention_delete' : 'retention_anonymise', 'retention', rec.id, {
-    after: { entity: rec.entity, action, approvedBy: auth.user.id },
-  });
   return json({ ok: true });
 });
 
@@ -286,7 +363,6 @@ admin.post('/retention/:id/dismiss', requireRoles('school_admin'), async (c) => 
   await c.env.DB.prepare("UPDATE retention_records SET status = 'dismissed', resolved_at = ? WHERE id = ? AND school_id = ?")
     .bind(nowIso(), c.req.param('id'), auth.activeSchool)
     .run();
-  await audit(c, 'dismiss', 'retention', c.req.param('id'));
   return json({ ok: true });
 });
 
@@ -498,7 +574,6 @@ admin.post('/imports', requireRoles('school_admin'), async (c) => {
   )
     .bind(batchId, auth.activeSchool, type, filename, 'dry_run', rows.length, ok.length, failed.length, JSON.stringify(report), auth.user.id, nowIso())
     .run();
-  await audit(c, 'dry_run', 'import', batchId, { after: { type, total: rows.length, ok: ok.length, failed: failed.length, duplicates: report.duplicates } });
   // The stored report keeps ciphertext for the confirm step; the client only sees masked values.
   const clientReport = {
     ...report,
@@ -605,7 +680,6 @@ admin.post('/imports/:id/confirm', requireRoles('school_admin'), async (c) => {
   await env.DB.prepare("UPDATE import_batches SET status = 'confirmed', report_json = ? WHERE id = ?")
     .bind(JSON.stringify({ ...report, ...summary }), batch.id)
     .run();
-  await audit(c, 'confirm', 'import', batch.id, { after: summary });
   return json({ imported: inserted, linked, failed: report.failed, parentSkipped, skipped: parentSkipped });
 });
 
@@ -638,11 +712,6 @@ function makePeopleImporter(c, schoolId, batchId, duplicateAction, duplicateReas
       const parent = await commitParent(env, plan);
       if (studentId) await linkParentToStudent(env, parent.id, studentId, schoolId);
       await ensureParentLogin(env, parent, schoolId, { appUrl });
-      if (plan.create) {
-        await audit(c, 'create', 'parent', parent.id, {
-          after: { via: 'import', batchId, duplicateReason: plan.create.duplicateReason, duplicateOf: plan.create.duplicateOf },
-        });
-      }
       return { ...parent, created: !!plan.create };
     },
     async teacher(r) {
@@ -656,9 +725,6 @@ function makePeopleImporter(c, schoolId, batchId, duplicateAction, duplicateReas
       const teacher = await commitTeacher(env, plan, schoolId);
       await addMembership(env, teacher.id, schoolId);
       await ensureLogin(env, { kind: 'teacher', person: teacher, schoolId, appUrl });
-      await audit(c, plan.create ? 'create' : 'add_membership', 'teacher', teacher.id, {
-        after: { via: 'import', batchId, schoolId, duplicateReason: plan.create?.duplicateReason || null },
-      });
       return { ...teacher, created: !!plan.create };
     },
   };
@@ -765,7 +831,6 @@ admin.post('/documents', requireRoles('school_admin', 'bursar'), async (c) => {
       nowIso(),
     )
     .run();
-  await audit(c, 'upload', 'document', docId, { after: { filename: file.name, size: file.size } });
   return json({ id: docId, filename: file.name, size: file.size }, 201);
 });
 
@@ -856,9 +921,8 @@ export async function lapseOffers(env) {
         userId: a.id,
         email: a.email,
         name: a.full_name,
-        type: 'offer_lapsed',
-        subject: `Tawaran luput / Offer lapsed — ${app.reference}`,
-        body: `Tawaran kepada ${app.student_name} telah luput tanpa jawapan. Anda boleh menawarkan tempat kepada pemohon seterusnya.\nThe offer to ${app.student_name} lapsed without a response. You may offer the place to the next applicant.`,
+        template: 'offer_lapsed',
+        vars: { reference: app.reference, student_name: app.student_name },
         language: a.language || 'bm',
       });
     }

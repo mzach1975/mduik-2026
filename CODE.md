@@ -1,6 +1,6 @@
 # CODE.md: how MDUIK works
 
-Reference for new sessions. `CLAUDE.md` covers commands, conventions and session history. This file covers architecture, data, flows and business rules. Updated 2026-11-19 (after CR-PR 2026-11-18). UI text says "madrasah" (BM and EN); code, routes and tables still say "school".
+Reference for new sessions. `CLAUDE.md` covers commands, conventions and session history. This file covers architecture, data, flows and business rules. Updated 2026-11-20 (after CR-PR 2026-11-20). UI text says "madrasah" (BM and EN); code, routes and tables still say "school".
 
 ## 1. What the system is
 A multi-tenant administration system for Islamic schools (categories `tahfiz` and `islamic_studies`) under MDUIK. Each school is a tenant. It covers:
@@ -48,16 +48,18 @@ Browser (React 19 SPA, Vite, react-router)  --fetch /api/* (cookie)-->  Cloudfla
 | `teachers.js` | `planTeacher` → `commitTeacher`, `addMembership`, `registerTeacher`, `teacherSchools`, `publicTeacher` |
 | `students.js` | CR-PR 2026-11-18 student fields: `PLACEMENTS`, `placementKey` (BM/EN labels → key), `registrationDateError`, `activeClass`/`activeClassByName`, `newStudentFields` (date default today, class and placement required) |
 | `finance.js` | numbering, invoice creation and status, credit application, payment allocation, receipt reversal, balances and aging, monthly and registration generation, reminders, `runDaily`, retention flagging |
-| `notify.js` | `notify` (inserts a `notifications` row, then emails if a recipient exists), `notifyRoles`, `notifyParentsOfStudent`, `subjectFor` |
+| `notify.js` | `notify` (inserts a `notifications` row, then emails if a recipient exists and the template is on; `template` + `vars` render the global template), `notifyRoles`, `notifyParentsOfStudent` |
+| `templates.js` | global email templates: `TEMPLATES` defaults (key, name, vars, `locked`, BM/EN subject/body), `getTemplate` (default + `email_templates` override), `renderTemplate` (subject "BM / EN", body BM then EN), `fill`, `unknownVars`, `rm` |
+| `xlsx.js` | `toXlsx(rows, columns, title)`: one-sheet `.xlsx` (stored zip, inline strings, bold header), `sheetName`, `XLSX_TYPE` |
 | `audit.js` | `audit(c, action, entity, id, {before, after})`, `auditView` |
 | `pdf.js` | receipt and statement PDFs |
-| `migrate.js` | `ensureSchema`: adds columns and indexes on existing databases; `migrateCr20261109` (one-off, guarded by a marker) |
+| `migrate.js` | `ensureSchema`: adds columns and indexes on existing databases; `migrateCr20261109` (one-off, guarded by a marker); `migrateCr20261118`; `migrateCr20261120` (email_templates, audit retention 3 months, clears finished migrations' backups); `bootstrapSuperAdmin` (`BOOTSTRAP_ADMIN` secret) |
 
 ### Frontend (`src/`)
 - **App shell:**
   - `main.jsx` and `App.jsx` handle routing.
   - Public pages: `/` (lead-capture landing: hero + sign-in card via `components/LoginForm.jsx`, announcements, CTA), `/apply`, `/status`, `/privacy`.
-  - Auth pages: `/login`, `/forgot-password`, `/reset-password`.
+  - Auth pages: `/forgot-password`, `/reset-password`. There is no login page (CR-PR 2026-11-20): `/login` redirects to `/#login`, the sign-in card on the landing page, which scrolls into view.
   - Staff and portal pages live under `/app/*`.
 - **`App.jsx` guards:**
   - `RequireAuth` shows `ForcePassword` when `user.mustChangePassword` is set.
@@ -158,7 +160,8 @@ IDs are text with a prefix: `sch_`, `u_`/`usr`, `std`, `par`, `tch`, `tsm`, `ps`
 - `audit_logs (actor, role, action, entity, entity_id, before_json, after_json, ip)`.
 - `import_batches (type, status dry_run|confirmed, rows, report_json)`. `report_json` holds encrypted ICs and is never returned to clients.
 - `retention_config` and `retention_records` (flagged, then approved or dismissed; nothing is deleted automatically).
-- `documents (owner_type, owner_id, r2_key or data_b64)`, `backups`, `settings (key, value)` (also holds migration markers), `migration_backups`.
+- `documents (owner_type, owner_id, r2_key or data_b64)`, `backups`, `settings (key, value)` (also holds migration markers), `migration_backups` (emptied once a migration finishes).
+- `email_templates (key, subject_bm, subject_en, body_bm, body_en, enabled, updated_at, updated_by)`: overrides of the code defaults in `templates.js`; NULL text = default.
 
 ## 5. Identity, IC and login rules
 - **IC / Passport No.:**
@@ -292,7 +295,7 @@ IDs are text with a prefix: `sch_`, `u_`/`usr`, `std`, `par`, `tch`, `tsm`, `ps`
 - **`runDaily`, per active school:**
   - Day 1: monthly invoices and retention flagging.
   - The registration-generation date: registration invoices.
-  - Then reminders for all schools, then `lapseOffers`.
+  - Then reminders for all schools, then `purgeAuditLogs` (audit rows older than 3 months deleted), then `lapseOffers`.
 - **Reminders** cover active students with reminders on and overdue invoices.
   - **Stages:** a reminder is created on day 3 and day 14 past due, then every 30 days after that.
   - Days 3 and 14 are emailed to parents automatically.
@@ -340,9 +343,10 @@ The marking page has a sticky score bar with a gold submit button (the old green
   - Parents and teachers get logins.
 
 ### 6.11 Audit, retention, notifications, backups
-- **Audit:** every write calls `audit()` with before and after, and sensitive reads call `auditView`. School Admin can view their school's log.
+- **Audit:** most writes call `audit()` with before and after; CR-PR 2026-11-20 CR-5 removed record creation, views (`auditView` is now unused), imports, retention actions, uploads and profile/password changes (list in CLAUDE.md). Kept for 3 months, then deleted by the daily job. School Admin can view their school's log.
 - **Retention:** `retention_config` sets the period in months per data type. Records past retention are flagged, then a School Admin approves or dismisses them; there is no automatic deletion.
-- **Notifications:** always stored for the portal and emailed when a recipient address exists. `email_status` shows the delivery result, and there is an outbox view for School Admin.
+- **Notifications:** always stored for the portal and emailed when a recipient address exists and the template is on. Text comes from the global email templates (Super Admin → Email templates; every email bilingual). `email_status` (`queued|sent|failed|portal_only|disabled`) shows the delivery result, and there is an outbox view for School Admin.
+- **Reports:** a Super Admin sees all madrasahs (with a Madrasah column) or one picked with `?school=`; others see their active madrasah. Excel = `.xlsx`.
 - **Backups:**
   - School Admin can request an in-app backup to R2.
   - The deploy workflow exports all of D1 as a GitHub artifact before each deploy.
@@ -357,13 +361,14 @@ The marking page has a sticky score bar with a gold submit button (the old green
   3. Backed up, then dropped, `students.class_name/phone/email/fee_plan_id` and `applications.phone/email`.
   4. Backed up, then dropped, the `fee_plans` table.
   5. Re-masked `ic_masked` in 5 tables.
-- Backups sit in `migration_backups` (`json_object` rows, 34 on production).
+- Backups sit in `migration_backups` (`json_object` rows) only while a migration runs; `migrateCr20261120` deletes the rows of every migration whose marker is set (CR-PR 2026-11-20 CR-7).
+- **`migrateCr20261120`**: creates `email_templates`, sets `retention_config.audit_log` to 3 months, clears finished migrations' backups. **`bootstrapSuperAdmin`** creates the first Super Admin from `BOOTSTRAP_ADMIN` when none is active (must change password).
 
 ## 8. Tests
 - `node --test "tests/**/*.test.mjs"` runs the real Worker against an in-memory `node:sqlite` D1 shim (`tests/helpers.mjs`).
 - Helpers: `api`, `raw`, `asUser`. `asUser` clears `must_change_password`.
 - `tests/fixtures/schema-v1.sql` is the pre-migration schema, used for migration tests.
-- Coverage: the parent spec (`parents.test.mjs`), CR 2026-11-09 (`cr-2026-11-09.test.mjs`), CR-PR 2026-11-11, CR-PR 2026-11-14, CR-PR 2026-11-17 and CR-PR 2026-11-18 (`cr-pr-2026-11-*.test.mjs`): 51 tests. `setup()` seeds an active class `cls_a`/`cls_b` ("Tahun 1") per school.
+- Coverage: the parent spec (`parents.test.mjs`), CR 2026-11-09 (`cr-2026-11-09.test.mjs`), CR-PR 2026-11-11, CR-PR 2026-11-14, CR-PR 2026-11-17, CR-PR 2026-11-18 and CR-PR 2026-11-20 (`cr-pr-2026-11-*.test.mjs`): 57 tests. `setup()` seeds an active class `cls_a`/`cls_b` ("Tahun 1") per school.
 
 ## 9. Known gaps and open questions
 - Parents and teachers created before IC became mandatory have no `ic_hash`, so IC search can't find them. Passport ICs hashed before the normaliser change were digits only and won't match.

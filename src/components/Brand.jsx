@@ -46,7 +46,6 @@ export function Brand({ compact = false, light = false }) {
       {!compact && (
         <span className="brand__text">
           <strong>MDUIK</strong>
-          <small>Sistem Pentadbiran Madrasah</small>
         </span>
       )}
     </span>

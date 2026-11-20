@@ -52,7 +52,7 @@ export default function ResetPassword() {
         {done ? (
           <>
             <Alert tone="success">{t('auth.resetDone')}</Alert>
-            <Link to="/login" className="btn btn--primary btn--block">{t('auth.backToLogin')}</Link>
+            <Link to="/#login" className="btn btn--primary btn--block">{t('auth.backToLogin')}</Link>
           </>
         ) : (
           <form onSubmit={submit} className="authform">
@@ -66,7 +66,7 @@ export default function ResetPassword() {
             <button type="submit" className="btn btn--primary btn--block" disabled={busy || !token}>
               {busy && <span className="spinner spinner--light" />} {t('auth.resetPassword')}
             </button>
-            <Link to="/login" className="btn btn--ghost btn--block">{t('auth.backToLogin')}</Link>
+            <Link to="/#login" className="btn btn--ghost btn--block">{t('auth.backToLogin')}</Link>
           </form>
         )}
       </div>

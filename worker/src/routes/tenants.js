@@ -174,9 +174,8 @@ tenants.post('/schools', requireRoles('super_admin'), async (c) => {
       email: adminUser.email,
       name: adminUser.full_name,
       type: 'account_created',
-      subject: 'Akaun Pentadbir Madrasah / Madrasah Admin account',
-      body: `Akaun anda untuk ${body.name} telah dicipta. Log masuk di ${c.env.APP_URL || new URL(c.req.url).origin}.\nYour account for ${body.name} has been created. Sign in at ${c.env.APP_URL || new URL(c.req.url).origin}.`,
-      language: 'bm',
+      template: 'school_admin_created',
+      vars: { madrasah: body.name, app_url: c.env.APP_URL || new URL(c.req.url).origin },
     });
   }
   await c.env.DB.prepare(
@@ -184,9 +183,6 @@ tenants.post('/schools', requireRoles('super_admin'), async (c) => {
   )
     .bind(id('url'), adminUser.id, schoolId, 'school_admin', now)
     .run();
-  await audit(c, 'create', 'school', schoolId, {
-    after: { name: body.name, category: body.category, monthly_fee_cents: monthlyFee, registration_fee_cents: registrationFee },
-  });
   return json({ school: await c.env.DB.prepare('SELECT * FROM schools WHERE id = ?').bind(schoolId).first() }, 201);
 });
 
@@ -242,7 +238,6 @@ tenants.get('/schools/:id', async (c) => {
   if (!auth.isSuper && auth.activeSchool !== idParam) return bad('Forbidden', 403);
   const school = await c.env.DB.prepare('SELECT * FROM schools WHERE id = ?').bind(idParam).first();
   if (!school) return bad('Not found', 404);
-  await audit(c, 'view', 'school', idParam);
   return json({ school });
 });
 
@@ -360,18 +355,12 @@ tenants.post('/users', requireRoles('school_admin'), async (c) => {
     const r = await registerTeacher(c.env, { ...person, teacherId: body.teacherId || null }, { schoolId, appUrl });
     if (r.response) return r.response;
     if (r.login.error) return bad(message(r.login.error, 'teacher'), 409, { code: r.login.error });
-    await audit(c, r.created ? 'create' : 'add_membership', 'teacher', r.teacher.id, {
-      after: { via: 'user', schoolId, userId: r.login.userId, duplicateReason: r.plan.create?.duplicateReason || null },
-    });
     return json({ id: r.login.userId, teacherId: r.teacher.id, linked: !r.created, loginCreated: r.login.created }, 201);
   }
   if (role === 'parent') {
     const r = await registerParent(c.env, { ...person, parentId: body.parentId || null }, { schoolId, appUrl, studentIds });
     if (r.response) return r.response;
     if (r.login.error) return bad(message(r.login.error, 'parent'), 409, { code: r.login.error });
-    await audit(c, r.plan.create ? 'create' : 'link', 'parent', r.parent.id, {
-      after: { via: 'user', userId: r.login.userId, studentIds, duplicateReason: r.plan.create?.duplicateReason || null, matchedByIc: !!r.plan.matchedByIc },
-    });
     return json({ id: r.login.userId, parentId: r.parent.id, linked: !r.plan.create, loginCreated: r.login.created }, 201);
   }
 
@@ -401,11 +390,10 @@ tenants.post('/users', requireRoles('school_admin'), async (c) => {
     email: body.email,
     name: body.fullName,
     type: 'account_created',
-    subject: 'Akaun MDUIK dicipta / MDUIK account created',
-    body: `Akaun anda telah dicipta. Log masuk di ${c.env.APP_URL || new URL(c.req.url).origin} dengan e-mel ini.\nYour account has been created. Sign in at ${c.env.APP_URL || new URL(c.req.url).origin} with this email.`,
+    template: 'account_created',
+    vars: { email: body.email, app_url: c.env.APP_URL || new URL(c.req.url).origin },
     language: body.language || 'bm',
   });
-  await audit(c, 'create', 'user', userId, { after: { email: body.email, role, schoolId } });
   return json({ id: userId, temporaryPassword: body.password ? undefined : 'Mduik@2026' }, 201);
 });
 

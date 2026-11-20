@@ -53,7 +53,7 @@ export function useDebounced(value, delay = 350) {
 
 export function useDocumentTitle(title) {
   useEffect(() => {
-    document.title = title ? `${title} · MDUIK` : 'MDUIK · Sistem Pentadbiran Sekolah';
+    document.title = 'MDUIK';
   }, [title]);
 }
 

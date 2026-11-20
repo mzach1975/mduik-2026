@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { authMiddleware, requireRoles, encryptIc, hashIc } from '../lib/auth.js';
 import { id, nowIso, today, readJson, bad, json, yearOf, daysBetween, pageParams, pagingMeta, stripIc, normalizeIc, validIc } from '../lib/util.js';
-import { audit, auditView } from '../lib/audit.js';
-import { notify, notifyRoles, notifyParentsOfStudent, subjectFor } from '../lib/notify.js';
+import { audit } from '../lib/audit.js';
+import { notify, notifyRoles, notifyParentsOfStudent } from '../lib/notify.js';
+import { rm } from '../lib/templates.js';
 import { createInvoice, dueDateFor, studentBalance } from '../lib/finance.js';
 import { planParent, planFailure, commitParent, linkParentToStudent, ensureParentLogin } from '../lib/parents.js';
 import { message } from '../lib/people.js';
@@ -254,7 +255,6 @@ admissions.get('/applications/:id', staffAdmissions, async (c) => {
       }
     }
   }
-  await auditView(c, 'application', appId, app.reference);
   return json({ application: stripIc(app), interviews: interviews.results, decision, finalMark: avg, passMark: RUBRIC.passMark, belowPass: avg !== null && avg < RUBRIC.passMark });
 });
 
@@ -315,12 +315,8 @@ admissions.post('/applications/:id/schedule', requireRoles('school_admin'), asyn
     schoolId: auth.activeSchool,
     email: app.parent_email,
     name: app.parent_name || app.student_name,
-    type: 'interview_scheduled',
-    subject: subjectFor('interview_scheduled', app.language) + ` — ${app.reference}`,
-    body:
-      app.language === 'en'
-        ? `Your interview for application ${app.reference} is scheduled on ${when}. Location: ${body.location || 'School office'}.`
-        : `Temuduga untuk permohonan ${app.reference} dijadualkan pada ${when}. Lokasi: ${body.location || 'Pejabat madrasah'}.`,
+    template: 'interview_scheduled',
+    vars: { reference: app.reference, student_name: app.student_name, when, location: body.location || 'Pejabat madrasah / Madrasah office' },
     language: app.language,
   });
   for (const assessorId of assessors) {
@@ -331,14 +327,12 @@ admissions.post('/applications/:id/schedule', requireRoles('school_admin'), asyn
         userId: teacher.id,
         email: teacher.email,
         name: teacher.full_name,
-        type: 'interview_assigned',
-        subject: `Temuduga ditugaskan / Interview assigned — ${app.student_name}`,
-        body: `Anda ditugaskan untuk menilai temuduga ${app.student_name} (${app.reference}) pada ${when}.\nYou are assigned to assess the interview of ${app.student_name} (${app.reference}) on ${when}.`,
+        template: 'interview_assigned',
+        vars: { student_name: app.student_name, reference: app.reference, when },
         language: teacher.language,
       });
     }
   }
-  await audit(c, 'schedule', 'interview', interviewId, { after: { appId, scheduledAt: body.scheduledAt, assessors } });
   return json({ id: interviewId }, 201);
 });
 
@@ -368,12 +362,14 @@ admissions.post('/applications/:id/decision', requireRoles('school_admin'), asyn
     schoolId: auth.activeSchool,
     email: app.parent_email,
     name: app.parent_name || app.student_name,
-    type: 'decision',
-    subject: subjectFor('decision', app.language) + ` — ${app.reference}`,
-    body:
-      app.language === 'en'
-        ? `A decision has been recorded for application ${app.reference}: ${body.decision.replace('_', ' ')}. Reason: ${body.reason}.`
-        : `Keputusan telah direkodkan untuk permohonan ${app.reference}: ${body.decision === 'accepted' ? 'Diterima' : body.decision === 'not_accepted' ? 'Tidak diterima' : 'Senarai menunggu'}. Sebab: ${body.reason}.`,
+    template: 'decision',
+    vars: {
+      reference: app.reference,
+      student_name: app.student_name,
+      decision_bm: body.decision === 'accepted' ? 'Diterima' : body.decision === 'not_accepted' ? 'Tidak diterima' : 'Senarai menunggu',
+      decision_en: body.decision === 'accepted' ? 'Accepted' : body.decision === 'not_accepted' ? 'Not accepted' : 'Waiting list',
+      reason: body.reason,
+    },
     language: app.language,
   });
   await audit(c, 'decide', 'application', appId, { after: { decision: body.decision, reason: body.reason } });
@@ -396,12 +392,8 @@ admissions.post('/applications/:id/offer', requireRoles('school_admin'), async (
     schoolId: auth.activeSchool,
     email: app.parent_email,
     name: app.parent_name || app.student_name,
-    type: 'waiting_offer',
-    subject: subjectFor('waiting_offer', app.language) + ` — ${app.reference}`,
-    body:
-      app.language === 'en'
-        ? `A place is offered to ${app.student_name}. Please respond by ${deadline} (7 calendar days). If we do not hear from you, the offer will lapse.`
-        : `Tawaran tempat untuk ${app.student_name}. Sila jawab sebelum ${deadline} (7 hari kalendar). Jika tiada jawapan, tawaran akan luput.`,
+    template: 'waiting_offer',
+    vars: { reference: app.reference, student_name: app.student_name, deadline },
     language: app.language,
   });
   await audit(c, 'offer', 'application', appId, { after: { deadline } });
@@ -426,10 +418,13 @@ admissions.post('/applications/:id/offer-response', async (c) => {
     .bind(newStatus, body.response === 'accepted' ? 'accepted' : 'declined', appId)
     .run();
   await notifyRoles(c.env, app.school_id, ['school_admin'], {
-    type: 'offer_response',
-    subject: `Jawapan tawaran / Offer response — ${app.reference}`,
-    body: `Pemohon ${app.student_name} telah ${body.response === 'accepted' ? 'menerima' : 'menolak'} tawaran.\nApplicant ${app.student_name} has ${body.response === 'accepted' ? 'accepted' : 'declined'} the offer.`,
-    language: 'bm',
+    template: 'offer_response',
+    vars: {
+      reference: app.reference,
+      student_name: app.student_name,
+      response_bm: body.response === 'accepted' ? 'menerima' : 'menolak',
+      response_en: body.response === 'accepted' ? 'accepted' : 'declined',
+    },
   });
   await audit(c, 'offer_response', 'application', appId, { after: { response: body.response } });
   return json({ ok: true });
@@ -491,10 +486,8 @@ admissions.post('/applications/:id/register', requireRoles('school_admin'), asyn
     if (bal.outstanding > 0) {
       arrearsWarning = { studentId: existing.id, outstanding: bal.outstanding };
       await notifyRoles(c.env, auth.activeSchool, ['school_admin', 'bursar'], {
-        type: 'arrears_registration',
-        subject: `Pendaftaran dengan tunggakan / Registration with arrears — ${existing.full_name}`,
-        body: `${existing.full_name} didaftarkan semula dengan tunggakan RM ${(bal.outstanding / 100).toFixed(2)}. Pendaftaran tidak disekat.\n${existing.full_name} is being registered again with arrears of RM ${(bal.outstanding / 100).toFixed(2)}. Registration is not blocked.`,
-        language: 'bm',
+        template: 'arrears_registration',
+        vars: { student_name: existing.full_name, amount: rm(bal.outstanding) },
       });
     }
   }
@@ -533,13 +526,6 @@ admissions.post('/applications/:id/register', requireRoles('school_admin'), asyn
   const parent = await commitParent(c.env, parentPlan);
   await linkParentToStudent(c.env, parent.id, studentId, auth.activeSchool, body.relationship);
   const login = await ensureParentLogin(c.env, parent, auth.activeSchool, { appUrl: c.env.APP_URL || new URL(c.req.url).origin });
-  if (parentPlan.create) {
-    await audit(c, 'create', 'parent', parent.id, {
-      after: { via: 'registration', studentId, duplicateReason: parentPlan.create.duplicateReason, duplicateOf: parentPlan.create.duplicateOf },
-    });
-  } else {
-    await audit(c, 'link', 'parent', parent.id, { after: { via: 'registration', studentId, matchedByIc: !!parentPlan.matchedByIc } });
-  }
 
   const year = yearOf(today());
   const dueDate = dueDateFor(year, school.reg_due_month, school.reg_due_day);
@@ -556,7 +542,6 @@ admissions.post('/applications/:id/register', requireRoles('school_admin'), asyn
   });
 
   await c.env.DB.prepare("UPDATE applications SET status = 'registered' WHERE id = ?").bind(appId).run();
-  await audit(c, 'register', 'student', studentId, { after: { applicationId: appId, invoice: invoice.number, ...extra, class_name: className } });
   return json({ studentId, invoice, parentId: parent.id, parentLinked: !parentPlan.create, parentLoginCreated: login.created, arrearsWarning }, 201);
 });
 
@@ -612,7 +597,6 @@ admissions.get('/interviews/:id', staffAdmissions, async (c) => {
   const finalMark = scores.results.length
     ? Math.round((scores.results.reduce((s, r) => s + r.total, 0) / scores.results.length) * 100) / 100
     : null;
-  await auditView(c, 'interview', interviewId, interview.reference);
   return json({
     interview,
     assessors: assessors.results,
@@ -672,11 +656,12 @@ admissions.post('/interviews/:id/score', requireRoles('teacher', 'school_admin')
   if (allScores.length >= (assessorCount?.n || 1)) {
     await c.env.DB.prepare("UPDATE interviews SET status = 'completed' WHERE id = ?").bind(interviewId).run();
     if (finalMark < RUBRIC.passMark) {
+      const applicant = await c.env.DB.prepare('SELECT student_name, reference FROM applications WHERE id = ?')
+        .bind(interview.application_id)
+        .first();
       await notifyRoles(c.env, auth.activeSchool, ['school_admin'], {
-        type: 'below_pass_mark',
-        subject: `Calon bawah markah lulus / Applicant below pass mark — ${finalMark}`,
-        body: `Markah akhir ${finalMark}/100 berada di bawah markah lulus 40. Jawatankuasa perlu menimbang.\nFinal mark ${finalMark}/100 is below the pass mark of 40. Committee review required.`,
-        language: 'bm',
+        template: 'below_pass_mark',
+        vars: { final_mark: finalMark, student_name: applicant?.student_name || '', reference: applicant?.reference || '' },
       });
     }
   }

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { authMiddleware } from '../lib/auth.js';
-import { json, bad, today, toCsv, toExcel, downloadHeaders, monthOf } from '../lib/util.js';
-import { audit } from '../lib/audit.js';
+import { json, bad, today, toCsv, downloadHeaders, monthOf } from '../lib/util.js';
+import { toXlsx, XLSX_TYPE } from '../lib/xlsx.js';
 import { agingReport, ADJUSTED_RATE_SQL, monthlyRate } from '../lib/finance.js';
 import { buildReportPdf } from '../lib/pdf.js';
 
@@ -39,7 +39,14 @@ reports.get('/:id', async (c) => {
   const allowed = REPORT_ROLES[reportId];
   if (!allowed) return bad('Laporan tidak dijumpai. / Report not found.', 404);
   if (!auth.isSuper && !allowed.includes(auth.roleInSchool)) return bad('Tiada akses. / No access.', 403);
-  const schoolId = reportId === 'state-consolidated' ? null : auth.activeSchool;
+  // Super Admin: all madrasahs by default, or one picked with ?school=. A NULL
+  // school id matches every row (`school_id IS COALESCE(?, school_id)`).
+  let schoolId = auth.activeSchool;
+  if (auth.isSuper) {
+    const picked = c.req.query('school');
+    schoolId = picked && picked !== 'all' ? picked : null;
+  }
+  if (reportId === 'state-consolidated') schoolId = null;
   const db = c.env.DB;
   const from = c.req.query('from') || `${new Date().getUTCFullYear()}-01-01`;
   const to = c.req.query('to') || today();
@@ -47,7 +54,7 @@ reports.get('/:id', async (c) => {
 
   if (reportId === 'admissions-funnel') {
     const { results } = await db.prepare(
-      `SELECT status, COUNT(*) AS n FROM applications WHERE school_id = ? AND submitted_at BETWEEN ? AND ? GROUP BY status`,
+      `SELECT school_id, status, COUNT(*) AS n FROM applications WHERE school_id IS COALESCE(?, school_id) AND submitted_at BETWEEN ? AND ? GROUP BY school_id, status`,
     )
       .bind(schoolId, `${from}T00:00:00`, `${to}T23:59:59`)
       .all();
@@ -64,12 +71,12 @@ reports.get('/:id', async (c) => {
     };
   } else if (reportId === 'interview-results') {
     const { results } = await db.prepare(
-      `SELECT a.reference, a.student_name, a.status, iv.scheduled_at,
+      `SELECT a.school_id, a.reference, a.student_name, a.status, iv.scheduled_at,
         (SELECT GROUP_CONCAT(u.full_name, ', ') FROM scores sc JOIN users u ON u.id = sc.assessor_id WHERE sc.interview_id = iv.id) AS assessors,
         (SELECT AVG(sc.total) FROM scores sc WHERE sc.interview_id = iv.id) AS final_mark,
         (SELECT COUNT(*) FROM scores sc WHERE sc.interview_id = iv.id) AS scores_in
        FROM applications a JOIN interviews iv ON iv.application_id = a.id
-       WHERE a.school_id = ? AND iv.scheduled_at BETWEEN ? AND ? ORDER BY final_mark DESC`,
+       WHERE a.school_id IS COALESCE(?, a.school_id) AND iv.scheduled_at BETWEEN ? AND ? ORDER BY final_mark DESC`,
     )
       .bind(schoolId, from, `${to}T23:59:59`)
       .all();
@@ -88,11 +95,11 @@ reports.get('/:id', async (c) => {
       summary: [{ label: 'Interviews', value: results.length }],
     };
   } else if (reportId === 'registration-list') {
-    const sql = `SELECT s.id, s.full_name, s.status, s.ic_masked, s.monthly_tracking, s.created_at, s.registration_date, s.placement,
+    const sql = `SELECT s.id, s.school_id, s.full_name, s.status, s.ic_masked, s.monthly_tracking, s.created_at, s.registration_date, s.placement,
         (SELECT cl.name FROM classes cl WHERE cl.id = s.class_id) AS class_name,
         (SELECT p.full_name FROM parents p JOIN parent_students ps ON ps.parent_id = p.id WHERE ps.student_id = s.id LIMIT 1) AS parent_name,
         (SELECT p.phone FROM parents p JOIN parent_students ps ON ps.parent_id = p.id WHERE ps.student_id = s.id LIMIT 1) AS parent_phone
-      FROM students s WHERE s.school_id = ? AND s.status IN ('active','withdrawn','graduated')
+      FROM students s WHERE s.school_id IS COALESCE(?, s.school_id) AND s.status IN ('active','withdrawn','graduated')
       ORDER BY s.full_name`;
     const { results } = await db.prepare(sql).bind(schoolId).all();
     def = {
@@ -112,12 +119,11 @@ reports.get('/:id', async (c) => {
       summary: [{ label: 'Students', value: results.length }],
     };
   } else if (reportId === 'student-records') {
-    const school = await db.prepare('SELECT monthly_fee_cents FROM schools WHERE id = ?').bind(schoolId).first();
-    const sql = `SELECT s.full_name, s.ic_masked, s.dob, s.gender, s.status, s.registration_date, s.placement,
+    const sql = `SELECT s.school_id, s.full_name, s.ic_masked, s.dob, s.gender, s.status, s.registration_date, s.placement,
         (SELECT cl.name FROM classes cl WHERE cl.id = s.class_id) AS class_name,
-        ${ADJUSTED_RATE_SQL} AS adjusted_rate, s.monthly_tracking, s.tracking_start,
+        ${ADJUSTED_RATE_SQL} AS adjusted_rate, (SELECT sc.monthly_fee_cents FROM schools sc WHERE sc.id = s.school_id) AS school_fee, s.monthly_tracking, s.tracking_start,
         (SELECT COALESCE(SUM(i.amount_cents - i.paid_cents - i.credited_cents - i.waived_cents),0) FROM invoices i WHERE i.student_id = s.id AND i.status IN ('unpaid','partial')) AS outstanding
-      FROM students s WHERE s.school_id = ? ORDER BY s.full_name`;
+      FROM students s WHERE s.school_id IS COALESCE(?, s.school_id) ORDER BY s.full_name`;
     const { results } = await db.prepare(sql).bind(schoolId).all();
     def = {
       title: 'Student records / Rekod pelajar',
@@ -128,7 +134,7 @@ reports.get('/:id', async (c) => {
         { key: 'registration_date', label: 'Registration date' },
         { key: 'class_name', label: 'Class' },
         { key: 'placement', label: 'Placement', value: (r) => PLACEMENT_LABEL[r.placement] || '' },
-        { key: 'monthly_fee', label: 'Monthly fee (RM)', value: (r) => money(monthlyRate(r.adjusted_rate, school || {})) },
+        { key: 'monthly_fee', label: 'Monthly fee (RM)', value: (r) => money(monthlyRate(r.adjusted_rate, { monthly_fee_cents: r.school_fee })) },
         { key: 'monthly_tracking', label: 'Tracking', value: (r) => (r.monthly_tracking ? 'On' : 'Off') },
         { key: 'outstanding', label: 'Outstanding (RM)', value: (r) => money(r.outstanding) },
         { key: 'status', label: 'Status' },
@@ -138,9 +144,9 @@ reports.get('/:id', async (c) => {
     };
   } else if (reportId === 'teacher-records') {
     const { results } = await db.prepare(
-      `SELECT t.full_name, t.ic_masked, t.email, t.phone, tm.status,
+      `SELECT tm.school_id, t.full_name, t.ic_masked, t.email, t.phone, tm.status,
         (SELECT GROUP_CONCAT(s.name, ', ') FROM teacher_schools m JOIN schools s ON s.id = m.school_id WHERE m.teacher_id = t.id AND m.status = 'active') AS schools
-       FROM teacher_schools tm JOIN teachers t ON t.id = tm.teacher_id WHERE tm.school_id = ? ORDER BY t.full_name`,
+       FROM teacher_schools tm JOIN teachers t ON t.id = tm.teacher_id WHERE tm.school_id IS COALESCE(?, tm.school_id) ORDER BY t.full_name`,
     )
       .bind(schoolId)
       .all();
@@ -161,7 +167,7 @@ reports.get('/:id', async (c) => {
     const { results } = await db.prepare(
       `SELECT t.full_name, t.email, s.name AS school_name, 'teacher' AS role, tm.created_at AS started_at, tm.status
        FROM teacher_schools tm JOIN teachers t ON t.id = tm.teacher_id JOIN schools s ON s.id = tm.school_id
-       WHERE tm.teacher_id IN (SELECT teacher_id FROM teacher_schools WHERE school_id = ?) ORDER BY t.full_name, s.name`,
+       WHERE tm.teacher_id IN (SELECT teacher_id FROM teacher_schools WHERE school_id IS COALESCE(?, school_id)) ORDER BY t.full_name, s.name`,
     )
       .bind(schoolId)
       .all();
@@ -178,11 +184,11 @@ reports.get('/:id', async (c) => {
     };
   } else if (reportId === 'fee-collection') {
     const { results } = await db.prepare(
-      `SELECT p.paid_at AS date, COALESCE(r.number, '-') AS receipt, s.full_name AS student_name, p.method, p.bank_ref,
+      `SELECT p.school_id, p.paid_at AS date, COALESCE(r.number, '-') AS receipt, s.full_name AS student_name, p.method, p.bank_ref,
         p.amount_cents, p.is_recovery, u.full_name AS recorded_by_name
        FROM payments p JOIN students s ON s.id = p.student_id LEFT JOIN receipts r ON r.id = p.receipt_id
        LEFT JOIN users u ON u.id = p.recorded_by
-       WHERE p.school_id = ? AND p.paid_at BETWEEN ? AND ? AND (r.id IS NULL OR r.status != 'cancelled') ORDER BY p.paid_at`,
+       WHERE p.school_id IS COALESCE(?, p.school_id) AND p.paid_at BETWEEN ? AND ? AND (r.id IS NULL OR r.status != 'cancelled') ORDER BY p.paid_at`,
     )
       .bind(schoolId, from, to)
       .all();
@@ -226,9 +232,9 @@ reports.get('/:id', async (c) => {
     };
   } else if (reportId === 'receipt-register') {
     const { results } = await db.prepare(
-      `SELECT r.number, r.issued_at, r.amount_cents, r.status, r.cancel_reason, s.full_name AS student_name, p.method
+      `SELECT r.school_id, r.number, r.issued_at, r.amount_cents, r.status, r.cancel_reason, s.full_name AS student_name, p.method
        FROM receipts r JOIN payments p ON p.id = r.payment_id JOIN students s ON s.id = p.student_id
-       WHERE r.school_id = ? AND r.issued_at BETWEEN ? AND ? ORDER BY r.number`,
+       WHERE r.school_id IS COALESCE(?, r.school_id) AND r.issued_at BETWEEN ? AND ? ORDER BY r.number`,
     )
       .bind(schoolId, from, `${to}T23:59:59`)
       .all();
@@ -248,11 +254,11 @@ reports.get('/:id', async (c) => {
     };
   } else if (reportId === 'refund-log') {
     const { results } = await db.prepare(
-      `SELECT rf.created_at, s.full_name AS student_name, rf.amount_cents, rf.reason, rf.status,
+      `SELECT rf.school_id, rf.created_at, s.full_name AS student_name, rf.amount_cents, rf.reason, rf.status,
         u1.full_name AS requester_name, u2.full_name AS approver_name, rf.approved_at
        FROM refunds rf JOIN students s ON s.id = rf.student_id
        LEFT JOIN users u1 ON u1.id = rf.requested_by LEFT JOIN users u2 ON u2.id = rf.approved_by
-       WHERE rf.school_id = ? ORDER BY rf.created_at DESC`,
+       WHERE rf.school_id IS COALESCE(?, rf.school_id) ORDER BY rf.created_at DESC`,
     )
       .bind(schoolId)
       .all();
@@ -271,10 +277,10 @@ reports.get('/:id', async (c) => {
     };
   } else if (reportId === 'write-off-report') {
     const { results } = await db.prepare(
-      `SELECT w.created_at, s.full_name AS student_name, w.amount_cents, w.recovered_cents, w.reason,
+      `SELECT w.school_id, w.created_at, s.full_name AS student_name, w.amount_cents, w.recovered_cents, w.reason,
         u.full_name AS approver_name
        FROM write_offs w JOIN students s ON s.id = w.student_id LEFT JOIN users u ON u.id = w.approved_by
-       WHERE w.school_id = ? ORDER BY w.created_at DESC`,
+       WHERE w.school_id IS COALESCE(?, w.school_id) ORDER BY w.created_at DESC`,
     )
       .bind(schoolId)
       .all();
@@ -292,8 +298,8 @@ reports.get('/:id', async (c) => {
     };
   } else if (reportId === 'audit-log') {
     const { results } = await db.prepare(
-      `SELECT created_at, actor_name, actor_role, action, entity, entity_id, before_json, after_json
-       FROM audit_logs WHERE school_id = ? AND created_at BETWEEN ? AND ? ORDER BY created_at DESC LIMIT 5000`,
+      `SELECT school_id, created_at, actor_name, actor_role, action, entity, entity_id, before_json, after_json
+       FROM audit_logs WHERE school_id IS COALESCE(?, school_id) AND created_at BETWEEN ? AND ? ORDER BY created_at DESC LIMIT 5000`,
     )
       .bind(schoolId, from, `${to}T23:59:59`)
       .all();
@@ -339,7 +345,13 @@ reports.get('/:id', async (c) => {
   }
 
   const format = (c.req.query('format') || 'json').toLowerCase();
-  await audit(c, 'view', 'report', reportId, { after: { format, from, to } });
+  // All-madrasah view: lead with the madrasah name so rows can be told apart.
+  if (!schoolId && reportId !== 'state-consolidated' && def.rows.some((r) => r.school_id !== undefined)) {
+    const { results: names } = await db.prepare('SELECT id, name FROM schools').all();
+    const nameOf = Object.fromEntries(names.map((n) => [n.id, n.name]));
+    def.rows = def.rows.map((r) => ({ ...r, school_name: r.school_id ? nameOf[r.school_id] || '' : '-' }));
+    def.columns = [{ key: 'school_name', label: 'Madrasah' }, ...def.columns];
+  }
   if (format === 'json') {
     // Functions do not survive JSON, so apply display formatting here. Money
     // columns stay in cents and are flagged for the page to format.
@@ -358,8 +370,8 @@ reports.get('/:id', async (c) => {
     });
   }
   if (format === 'xls' || format === 'excel') {
-    return new Response(toExcel(def.rows, def.columns, def.title), {
-      headers: downloadHeaders(`${reportId}-${to}.xls`, 'application/vnd.ms-excel; charset=utf-8'),
+    return new Response(toXlsx(def.rows, def.columns, def.title), {
+      headers: downloadHeaders(`${reportId}-${to}.xlsx`, XLSX_TYPE),
     });
   }
   if (format === 'pdf') {
@@ -369,7 +381,7 @@ reports.get('/:id', async (c) => {
       value: col.value || ((r) => r[col.key]),
     }));
     const bytes = buildReportPdf({
-      school: auth.school,
+      school: schoolId ? await db.prepare('SELECT * FROM schools WHERE id = ?').bind(schoolId).first() : null,
       title: def.title,
       subtitle: `${from} — ${to}`,
       columns,

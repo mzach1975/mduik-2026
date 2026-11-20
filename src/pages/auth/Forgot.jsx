@@ -51,7 +51,7 @@ export default function Forgot() {
                 <a href={devLink}>{devLink}</a>
               </Alert>
             )}
-            <Link to="/login" className="btn btn--primary btn--block">{t('auth.backToLogin')}</Link>
+            <Link to="/#login" className="btn btn--primary btn--block">{t('auth.backToLogin')}</Link>
           </>
         ) : (
           <form onSubmit={submit} className="authform">
@@ -62,7 +62,7 @@ export default function Forgot() {
             <button type="submit" className="btn btn--primary btn--block" disabled={busy || !email}>
               {busy && <span className="spinner spinner--light" />} {t('auth.sendReset')}
             </button>
-            <Link to="/login" className="btn btn--ghost btn--block">{t('auth.backToLogin')}</Link>
+            <Link to="/#login" className="btn btn--ghost btn--block">{t('auth.backToLogin')}</Link>
           </form>
         )}
       </div>

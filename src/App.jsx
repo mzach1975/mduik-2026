@@ -9,7 +9,6 @@ import Landing from './pages/public/Landing';
 import Apply from './pages/public/Apply';
 import Status from './pages/public/Status';
 import Privacy from './pages/public/Privacy';
-import Login from './pages/auth/Login';
 import Forgot from './pages/auth/Forgot';
 import ResetPassword from './pages/auth/ResetPassword';
 import ForcePassword from './pages/auth/ForcePassword';
@@ -40,6 +39,7 @@ import Retention from './pages/Retention';
 import Schools from './pages/Schools';
 import Users from './pages/Users';
 import Announcements from './pages/Announcements';
+import EmailTemplates from './pages/EmailTemplates';
 import Notifications from './pages/Notifications';
 import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
@@ -57,14 +57,14 @@ function RequireAuth({ children }) {
   const { user, loading } = useAuth();
   const location = useLocation();
   if (loading) return <Splash />;
-  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
+  if (!user) return <Navigate to="/#login" replace state={{ from: location.pathname + location.search }} />;
   if (user.mustChangePassword) return <ForcePassword />;
   return children;
 }
 
 function RequireRole({ roles, children }) {
   const { user } = useAuth();
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user) return <Navigate to="/#login" replace />;
   if (user.isSuper) return children;
   if (!roles.includes(user.role)) return <Navigate to="/app" replace />;
   return children;
@@ -92,7 +92,7 @@ export default function App() {
         <Route path="/privacy" element={<Privacy />} />
       </Route>
 
-      <Route path="/login" element={<Login />} />
+      <Route path="/login" element={<Navigate to="/#login" replace />} />
       <Route path="/forgot-password" element={<Forgot />} />
       <Route path="/reset-password" element={<ResetPassword />} />
 
@@ -136,6 +136,7 @@ export default function App() {
 
         <Route path="schools" element={<RequireRole roles={SUPER}><Schools /></RequireRole>} />
         <Route path="announcements" element={<RequireRole roles={SUPER}><Announcements /></RequireRole>} />
+        <Route path="email-templates" element={<RequireRole roles={SUPER}><EmailTemplates /></RequireRole>} />
         <Route path="notifications" element={<Notifications />} />
         <Route path="settings" element={<Settings />} />
 

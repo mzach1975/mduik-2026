@@ -39,7 +39,7 @@ export default function PublicLayout() {
               <span className="langtoggle__sep">/</span>
               <span className={lang === 'en' ? 'is-on' : ''}>EN</span>
             </button>
-            <Link to={user ? '/app' : '/login'} className="btn btn--primary btn--sm">
+            <Link to={user ? '/app' : '/#login'} className="btn btn--primary btn--sm">
               {user ? t('nav.dashboard') : t('landing.signIn')}
               <Icon name="arrowRight" size={15} />
             </Link>
@@ -62,7 +62,7 @@ export default function PublicLayout() {
             <h4>{t('nav.admissions')}</h4>
             <Link to="/apply">{t('landing.applyNow')}</Link>
             <Link to="/status">{t('landing.checkStatus')}</Link>
-            <Link to="/login">{t('landing.parentPortal')}</Link>
+            <Link to="/#login">{t('landing.parentPortal')}</Link>
           </div>
           <div className="pubfoot__col">
             <h4>{t('common.schools')}</h4>

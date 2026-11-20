@@ -1,5 +1,7 @@
 import { id, nowIso, today, monthOf, yearOf, daysBetween, addMonths } from './util.js';
-import { notifyParentsOfStudent, notifyRoles, subjectFor } from './notify.js';
+import { notifyParentsOfStudent, notifyRoles } from './notify.js';
+import { rm } from './templates.js';
+import { AUDIT_RETENTION_MONTHS } from './migrate.js';
 
 /** Allocate the next sequential document number for a school. */
 export async function nextNumber(env, schoolId, kind, prefix, year = new Date().getFullYear()) {
@@ -167,9 +169,8 @@ export async function generateMonthlyInvoices(env, schoolId, month = monthOf(tod
       await notifyParentsOfStudent(env, student.id, {
         schoolId,
         type: 'invoice_issued',
-        subject: subjectFor('invoice_issued', 'bm') + ` — ${month}`,
-        body: `Invois ${invoice.number} sebanyak RM ${(amount / 100).toFixed(2)} telah dikeluarkan untuk ${student.full_name}. Tarikh akhir: ${dueDate}.\nInvoice ${invoice.number} for RM ${(amount / 100).toFixed(2)} has been issued for ${student.full_name}. Due date: ${dueDate}.`,
-        language: 'bm',
+        template: 'invoice_monthly',
+        vars: { invoice_no: invoice.number, amount: rm(amount), student_name: student.full_name, due_date: dueDate, month },
       });
     }
   }
@@ -204,9 +205,8 @@ export async function generateRegistrationInvoices(env, schoolId, year = yearOf(
       await notifyParentsOfStudent(env, student.id, {
         schoolId,
         type: 'invoice_issued',
-        subject: subjectFor('invoice_issued', 'bm') + ` — ${year}`,
-        body: `Yuran pendaftaran ${year} sebanyak RM ${(amount / 100).toFixed(2)} telah dikenakan. Tarikh akhir: ${dueDate}.\nThe ${year} registration fee of RM ${(amount / 100).toFixed(2)} has been charged. Due date: ${dueDate}.`,
-        language: 'bm',
+        template: 'invoice_registration',
+        vars: { invoice_no: invoice.number, amount: rm(amount), student_name: student.full_name, due_date: dueDate, year },
       });
     }
   }
@@ -328,10 +328,8 @@ export async function recordPayment(env, {
 
   await notifyParentsOfStudent(env, studentId, {
     schoolId,
-    type: 'payment_received',
-    subject: subjectFor('payment_received', 'bm') + ` — ${receiptNumber}`,
-    body: `Bayaran RM ${(amountCents / 100).toFixed(2)} telah diterima untuk ${student.full_name}. Resit ${receiptNumber} boleh dimuat turun dari portal ibu bapa.\nA payment of RM ${(amountCents / 100).toFixed(2)} has been received for ${student.full_name}. Receipt ${receiptNumber} is available in the parent portal.`,
-    language: 'bm',
+    template: 'payment_received',
+    vars: { amount: rm(amountCents), student_name: student.full_name, receipt_no: receiptNumber },
   });
 
   return { payment, receipt, allocations, credit, student };
@@ -398,7 +396,7 @@ export async function agingReport(env, schoolId, asOf = today()) {
   const { results } = await env.DB.prepare(
     `SELECT i.*, s.full_name AS student_name
      FROM invoices i JOIN students s ON s.id = i.student_id
-     WHERE i.school_id = ? AND i.status IN ('unpaid','partial')
+     WHERE i.school_id IS COALESCE(?, i.school_id) AND i.status IN ('unpaid','partial')
        AND (i.amount_cents - i.paid_cents - i.credited_cents - i.waived_cents) > 0
      ORDER BY i.due_date ASC`,
   )
@@ -458,19 +456,14 @@ export async function runReminders(env, asOf = today()) {
       await notifyParentsOfStudent(env, inv.student_id, {
         schoolId: inv.school_id,
         type: 'arrears_reminder',
-        subject: `${subjectFor('arrears_reminder', 'bm')} — ${inv.number}`,
-        body:
-          stage === 3
-            ? `Peringatan mesra: invois ${inv.number} sebanyak RM ${(outstanding / 100).toFixed(2)} telah melepasi tarikh akhir ${inv.due_date}. Sila buat bayaran.\nFriendly reminder: invoice ${inv.number} for RM ${(outstanding / 100).toFixed(2)} is past its due date of ${inv.due_date}. Please make payment.`
-            : `Notis kedua: invois ${inv.number} sebanyak RM ${(outstanding / 100).toFixed(2)} masih belum dibayar (tarikh akhir ${inv.due_date}). Sila hubungi pihak madrasah.\nSecond notice: invoice ${inv.number} for RM ${(outstanding / 100).toFixed(2)} remains unpaid (due ${inv.due_date}). Please contact the madrasah.`,
-        language: 'bm',
+        template: stage === 3 ? 'arrears_reminder_1' : 'arrears_reminder_2',
+        vars: { invoice_no: inv.number, amount: rm(outstanding), due_date: inv.due_date, student_name: inv.student_name },
       });
     } else {
       await notifyRoles(env, inv.school_id, ['bursar', 'school_admin'], {
         type: 'arrears_reminder_review',
-        subject: `Semakan notis rasmi / Formal notice review — ${inv.number}`,
-        body: `Notis formal untuk invois ${inv.number} (${inv.student_name}) menunggu semakan Bursar sebelum dihantar.\nFormal notice for invoice ${inv.number} (${inv.student_name}) is awaiting Bursar review before sending.`,
-        language: 'bm',
+        template: 'arrears_review',
+        vars: { invoice_no: inv.number, student_name: inv.student_name },
       });
     }
   }
@@ -483,7 +476,7 @@ export async function runDaily(env) {
   const month = d.getUTCMonth() + 1;
   const year = d.getUTCFullYear();
   const { results: schools } = await env.DB.prepare("SELECT * FROM schools WHERE status = 'active'").all();
-  const summary = { schools: schools.length, monthly: 0, registration: 0, reminders: 0, retention: 0 };
+  const summary = { schools: schools.length, monthly: 0, registration: 0, reminders: 0, retention: 0, auditPurged: 0 };
   for (const school of schools) {
     if (day === 1) {
       const r = await generateMonthlyInvoices(env, school.id, monthOf(today()));
@@ -498,7 +491,16 @@ export async function runDaily(env) {
     }
   }
   summary.reminders = (await runReminders(env)).length;
+  summary.auditPurged = await purgeAuditLogs(env);
   return summary;
+}
+
+/** CR-PR 2026-11-20 CR-3: delete audit entries older than 3 months (no archive). */
+export async function purgeAuditLogs(env) {
+  const res = await env.DB.prepare(
+    `DELETE FROM audit_logs WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${AUDIT_RETENTION_MONTHS} months')`,
+  ).run();
+  return res?.meta?.changes ?? 0;
 }
 
 /** Flag records past retention (FR-RET-05) - nothing deleted automatically. */

@@ -14,8 +14,9 @@ import {
 } from '../lib/parents.js';
 import { EMAIL_RE, message } from '../lib/people.js';
 import { registerTeacher, findTeacherByIc, publicTeacher, teacherSchools, membership } from '../lib/teachers.js';
-import { audit, auditView } from '../lib/audit.js';
-import { notifyParentsOfStudent, subjectFor } from '../lib/notify.js';
+import { audit } from '../lib/audit.js';
+import { notifyParentsOfStudent } from '../lib/notify.js';
+import { rm } from '../lib/templates.js';
 import { studentBalance, createInvoice, dueDateFor, ADJUSTED_RATE_SQL, monthlyRate, studentMonthlyRate } from '../lib/finance.js';
 import { buildReceiptPdf } from '../lib/pdf.js';
 import { PLACEMENTS, newStudentFields, activeClass, registrationDateError, studentFieldMessage } from '../lib/students.js';
@@ -105,7 +106,6 @@ records.get('/students/:id', staffOnly, async (c) => {
   const adjustments = await c.env.DB.prepare('SELECT * FROM fee_adjustments WHERE student_id = ? ORDER BY created_at DESC')
     .bind(studentId)
     .all();
-  await auditView(c, 'student', studentId, student.full_name);
   return json({
     student: publicStudent(student, auth.school),
     parents: parents.results,
@@ -159,9 +159,6 @@ records.post('/students', requireRoles('school_admin'), async (c) => {
       nowIso(),
     )
     .run();
-  await audit(c, 'create', 'student', studentId, {
-    after: { fullName, icDuplicateConfirmed: matches.length > 0, ...extra, class_name: className },
-  });
   return json({ id: studentId }, 201);
 });
 
@@ -287,7 +284,6 @@ records.post('/classes', requireRoles('school_admin'), async (c) => {
   await c.env.DB.prepare("INSERT INTO classes (id, school_id, name, description, status, created_at) VALUES (?,?,?,?,'active',?)")
     .bind(classId, auth.activeSchool, name, description || null, nowIso())
     .run();
-  await audit(c, 'create', 'class', classId, { after: { name, description } });
   return json({ id: classId }, 201);
 });
 
@@ -352,16 +348,8 @@ records.post('/students/:id/tracking', requireRoles('school_admin'), async (c) =
     .run();
   await notifyParentsOfStudent(c.env, studentId, {
     schoolId: auth.activeSchool,
-    type: enabled ? 'tracking_on' : 'tracking_off',
-    subject: subjectFor(enabled ? 'tracking_on' : 'tracking_off', 'bm'),
-    body: enabled
-      ? `Pemantauan yuran bulanan untuk ${student.full_name} telah dihidupkan. Invois bulanan pertama akan dijana pada 1 ${trackingStart}.\nMonthly fee tracking for ${student.full_name} is switched on. The first monthly invoice will be generated on 1 ${trackingStart}.`
-      : `Pemantauan yuran bulanan untuk ${student.full_name} telah dimatikan. Tiada invois bulanan baharu akan dijana; invois sedia ada masih perlu dibayar.\nMonthly fee tracking for ${student.full_name} is switched off. No new monthly invoices will be generated; existing invoices remain payable.`,
-    language: 'bm',
-  });
-  await audit(c, 'tracking_toggle', 'student', studentId, {
-    before: { monthly_tracking: student.monthly_tracking, tracking_start: student.tracking_start },
-    after: { monthly_tracking: enabled ? 1 : 0, tracking_start: trackingStart },
+    template: enabled ? 'tracking_on' : 'tracking_off',
+    vars: { student_name: student.full_name, start_month: trackingStart || '' },
   });
   return json({ ok: true, monthlyTracking: enabled ? 1 : 0, trackingStart });
 });
@@ -382,7 +370,6 @@ records.post('/students/:id/reminders', requireRoles('school_admin', 'bursar'), 
   await c.env.DB.prepare('UPDATE students SET reminders_enabled = ? WHERE id = ?')
     .bind(body.enabled ? 1 : 0, studentId)
     .run();
-  await audit(c, 'reminders_toggle', 'student', studentId, { before: { reminders_enabled: student.reminders_enabled }, after: { reminders_enabled: body.enabled ? 1 : 0 } });
   return json({ ok: true, remindersEnabled: body.enabled ? 1 : 0 });
 });
 
@@ -406,7 +393,6 @@ records.post('/students/:id/registration-invoice', requireRoles('school_admin'),
     amountCents: amount,
     description: `Yuran pendaftaran ${year} / Registration fee ${year}`,
   });
-  if (created) await audit(c, 'create', 'invoice', invoice.id, { after: { type: 'registration', period: year, amount } });
   return json({ invoice, created });
 });
 
@@ -465,10 +451,8 @@ records.post('/adjustments/:id/approve', requireRoles('school_admin'), async (c)
   });
   await notifyParentsOfStudent(c.env, adj.student_id, {
     schoolId: auth.activeSchool,
-    type: 'fee_adjustment',
-    subject: 'Pelarasan yuran diluluskan / Fee adjustment approved',
-    body: `Yuran bulanan untuk ${student.full_name} telah diselaraskan kepada RM ${(adj.new_rate_cents / 100).toFixed(2)} mulai invois akan datang.\nThe monthly fee for ${student.full_name} has been adjusted to RM ${(adj.new_rate_cents / 100).toFixed(2)} from future invoices.`,
-    language: 'bm',
+    template: 'fee_adjustment',
+    vars: { student_name: student.full_name, amount: rm(adj.new_rate_cents) },
   });
   return json({ ok: true });
 });
@@ -545,15 +529,6 @@ records.post('/teachers', requireRoles('school_admin'), async (c) => {
   );
   if (r.response) return r.response;
   if (r.login.error) return bad(message(r.login.error, 'teacher'), 409, { code: r.login.error });
-  await audit(c, r.created ? 'create' : 'add_membership', 'teacher', r.teacher.id, {
-    after: {
-      schoolId: auth.activeSchool,
-      userId: r.login.userId,
-      matchedByIc: !!r.plan.matchedByIc,
-      duplicateReason: r.plan.create?.duplicateReason || null,
-      duplicateOf: r.plan.create?.duplicateOf || [],
-    },
-  });
   return json({ id: r.teacher.id, userId: r.login.userId, linked: !r.created, loginCreated: r.login.created }, r.created ? 201 : 200);
 });
 
@@ -655,7 +630,6 @@ records.get('/parents/lookup', requireRoles('school_admin'), async (c) => {
   const ic = c.req.query('ic') || '';
   if (!validIc(ic)) return bad(message('ic_invalid'), 400, { code: 'ic_invalid' });
   const parent = await findParentByIc(c.env, ic);
-  await audit(c, 'ic_lookup', 'parent', parent?.id || null, { after: { matched: !!parent } });
   if (!parent) return json({ match: null });
   const { results: links } = await c.env.DB.prepare(
     `SELECT s.id, s.full_name, s.school_id, sc.name AS school_name, ps.relationship
@@ -688,7 +662,6 @@ records.get('/parents/:id', staffOnly, async (c) => {
     .all();
   if (!children.some((ch) => ch.school_id === auth.activeSchool) && !auth.isSuper) return bad('Forbidden', 403);
   const visible = auth.isSuper ? children : children.filter((ch) => ch.school_id === auth.activeSchool);
-  await auditView(c, 'parent', parent.id, parent.full_name);
   const isAdmin = auth.isSuper || auth.roleInSchool === 'school_admin';
   return json({
     parent: publicParent(parent),
@@ -737,11 +710,7 @@ records.post('/parents', requireRoles('school_admin'), async (c) => {
   );
   if (r.response) return r.response;
   const { parent, plan, login } = r;
-  if (plan.create) {
-    await audit(c, 'create', 'parent', parent.id, {
-      after: { via: 'manual', studentId: student?.id || null, userId: login.userId, duplicateReason: plan.create.duplicateReason, duplicateOf: plan.create.duplicateOf },
-    });
-  } else {
+  if (!plan.create) {
     await audit(c, 'link', 'parent', parent.id, { after: { via: 'manual', studentId: student?.id || null, matchedByIc: !!plan.matchedByIc } });
   }
   return json({ id: parent.id, linked: !plan.create, userId: login.userId, loginCreated: login.created, loginError: login.error || null }, plan.create ? 201 : 200);
@@ -982,7 +951,6 @@ records.get('/portal/children/:id', requireRoles('parent'), async (c) => {
     .bind(studentId)
     .all();
   const balance = await studentBalance(c.env, studentId);
-  await auditView(c, 'student_portal', studentId, student.full_name);
   return json({ student: stripIc(student), invoices: invoices.results, payments: payments.results, balance });
 });
 
@@ -1016,7 +984,6 @@ records.get('/portal/receipts/:id/pdf', requireRoles('parent'), async (c) => {
   )
     .bind(payment.id)
     .all();
-  await auditView(c, 'receipt_portal', receipt.id, receipt.number);
   const bytes = buildReceiptPdf({
     school,
     receipt,
@@ -1053,7 +1020,6 @@ records.patch('/portal/contact', requireRoles('parent'), async (c) => {
   const stmts = [c.env.DB.prepare(`UPDATE parents SET ${sets}, updated_at = ? WHERE id = ?`).bind(...Object.values(fields), nowIso(), auth.parent.id)];
   if (updates.email) stmts.push(c.env.DB.prepare('UPDATE users SET email = ? WHERE id = ?').bind(updates.email, auth.user.id));
   await c.env.DB.batch(stmts);
-  await audit(c, 'update', 'parent_contact', auth.parent.id, { before: { phone: auth.parent.phone, email: auth.parent.email, address: auth.parent.address }, after: updates });
   return json({ ok: true });
 });
 

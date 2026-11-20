@@ -71,7 +71,7 @@ src/
   locales/              BM and EN translation dictionaries
   api.js, auth.jsx      API client and authentication context
 schema.sql              D1 schema
-seed.sql                Demo data
+seed.sql                Reference data only (no demo data; first Super Admin via BOOTSTRAP_ADMIN)
 scripts/                Seed generator and maintenance scripts
 wrangler.toml           Worker, D1, R2, assets and cron configuration
 ```

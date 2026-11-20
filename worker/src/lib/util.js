@@ -114,44 +114,6 @@ export function toCsv(rows, columns) {
   return `\uFEFF${head}\r\n${body}`;
 }
 
-function xmlEscape(v) {
-  return String(v ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-// Excel-compatible SpreadsheetML (opens natively in Excel, no zip dependency).
-export function toExcel(rows, columns, title = 'Export') {
-  const header = columns
-    .map((c) => `<Cell ss:StyleID="head"><Data ss:Type="String">${xmlEscape(c.label)}</Data></Cell>`)
-    .join('');
-  const body = rows
-    .map((row) => {
-      const cells = columns
-        .map((c) => {
-          const raw = typeof c.value === 'function' ? c.value(row) : row[c.key];
-          const num = typeof raw === 'number' && Number.isFinite(raw);
-          return `<Cell><Data ss:Type="${num ? 'Number' : 'String'}">${xmlEscape(raw)}</Data></Cell>`;
-        })
-        .join('');
-      return `<Row>${cells}</Row>`;
-    })
-    .join('');
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
- <Styles>
-  <Style ss:ID="head"><Font ss:Bold="1"/><Interior ss:Color="#0F5132" ss:Pattern="Solid"/><Font ss:Color="#FFFFFF" ss:Bold="1"/></Style>
- </Styles>
- <Worksheet ss:Name="${xmlEscape(title).slice(0, 28)}">
-  <Table><Row>${header}</Row>${body}</Table>
- </Worksheet>
-</Workbook>`;
-}
-
 export function downloadHeaders(filename, contentType) {
   return {
     'content-type': contentType,

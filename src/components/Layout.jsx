@@ -94,6 +94,7 @@ function navSections(role, isSuper, hasSchool) {
       items.push(
         { to: '/app/schools', label: 'nav.schools', icon: 'school' },
         { to: '/app/announcements', label: 'nav.announcements', icon: 'megaphone' },
+        { to: '/app/email-templates', label: 'nav.emailTemplates', icon: 'mail' },
       );
     }
     items.push(
@@ -176,7 +177,7 @@ export default function Layout() {
 
   async function handleLogout() {
     await logout();
-    navigate('/login');
+    navigate('/');
   }
 
   function toggleLanguage() {

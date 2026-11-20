@@ -63,9 +63,9 @@ export default function Announcements() {
   const announcements = data?.announcements || [];
 
   useEffect(() => {
-    document.title = `${t('announcements.title')} · MDUIK`;
+    document.title = 'MDUIK';
     return () => {
-      document.title = `${t('common.appName')} — ${t('common.appFull')}`;
+      document.title = 'MDUIK';
     };
   }, [t]);
 

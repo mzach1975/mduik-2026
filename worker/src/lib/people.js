@@ -120,24 +120,6 @@ async function isAdminUser(env, userId) {
   return Boolean(row);
 }
 
-/** Welcome email text. It states the login ID (email, or the masked IC) and never the password. */
-export function welcomeMessage({ email, icMasked, appUrl, initial }) {
-  if (!initial) {
-    return {
-      subject: 'Akaun MDUIK dicipta / MDUIK account created',
-      body: `Akaun MDUIK anda telah dicipta. ID log masuk: ${email}. Di ${appUrl}, pilih "Lupa kata laluan" untuk menetapkan kata laluan.\nYour MDUIK account has been created. Login ID: ${email}. At ${appUrl}, choose "Forgot password" to set your password.`,
-    };
-  }
-  const id = icMasked ? ` atau No. IC / Pasport anda (${icMasked})` : '';
-  const idEn = icMasked ? ` or your IC / Passport No. (${icMasked})` : '';
-  return {
-    subject: 'Akaun MDUIK dicipta / MDUIK account created',
-    body:
-      `Akaun MDUIK anda telah dicipta.\nID log masuk: ${email}${id}.\nKata laluan pertama ialah No. IC / Pasport anda tanpa ruang atau tanda sempang. Anda perlu menukarnya semasa log masuk pertama.\nLog masuk di ${appUrl}.\n\n` +
-      `Your MDUIK account has been created.\nLogin ID: ${email}${idEn}.\nYour first password is your IC / Passport No. without spaces or hyphens. You must change it when you first sign in.\nSign in at ${appUrl}.`,
-  };
-}
-
 /**
  * Give a parent or teacher a login with a role at the school. One login per
  * person: an existing login with the same IC hash (or the same email with no
@@ -215,8 +197,15 @@ export async function ensureLogin(env, { kind, person, schoolId, appUrl = '' }) 
       .bind(userId, schoolId, role),
   ]);
   if (created) {
-    const msg = welcomeMessage({ email: person.email, icMasked: person.ic_masked, appUrl, initial: Boolean(person.ic_hash) });
-    await notify(env, { schoolId, userId, email: person.email, name: person.full_name, type: 'account_created', ...msg, language: 'bm' });
+    await notify(env, {
+      schoolId,
+      userId,
+      email: person.email,
+      name: person.full_name,
+      type: 'account_created',
+      template: person.ic_hash ? 'account_welcome' : 'account_welcome_no_ic',
+      vars: { email: person.email, ic_masked: person.ic_masked || '', app_url: appUrl },
+    });
   }
   return { userId, created };
 }

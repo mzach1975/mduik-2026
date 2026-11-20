@@ -10,7 +10,7 @@ MDUIK School Administration System: a multi-tenant system for admissions, record
 - `npm run build`: frontend build (deploy needs it)
 - `npm test`: integration tests (`node --test "tests/**/*.test.mjs"`; needs Node ≥ 22.13 for `node:sqlite`). Use the glob: Node 22 in CI does not accept a folder argument.
 - `npx wrangler deploy --dry-run --outdir .wrangler-dry`: check the Worker bundles
-- `node scripts/generate-seed.mjs`: regenerate `seed.sql` (reads `IC_KEY`/`IC_PEPPER` from `.dev.vars`)
+- `node scripts/generate-seed.mjs`: regenerate `seed.sql` (reference data only: `retention_config`; no demo data). The first Super Admin comes from the `BOOTSTRAP_ADMIN` secret (`.dev.vars` locally).
 - Deploy: a push to `main` runs `.github/workflows/deploy.yml` (npm test → build → D1 export as artifact `d1-backup-<sha>`, kept 30 days → apply `schema.sql` → deploy → smoke test `/api/health`)
 
 ## Layout
@@ -19,6 +19,8 @@ MDUIK School Administration System: a multi-tenant system for admissions, record
 - `worker/src/lib/parents.js` / `teachers.js`: parent and teacher services (IC lookup, plan → commit, linking, school memberships)
 - `worker/src/lib/auth.js`: sessions, PBKDF2 passwords, IC crypto (`hashIc`, `encryptIc`), first-password sentinel, `must_change_password` gate
 - `worker/src/lib/util.js`: `normalizeIc`, `validIc`, `maskIc`, `bad`, ids
+- `worker/src/lib/templates.js`: global email templates (defaults + `email_templates` overrides), `getTemplate`, `renderTemplate`. `notify({ template, vars })` uses them.
+- `worker/src/lib/xlsx.js`: dependency-free `.xlsx` writer (`toXlsx`, `XLSX_TYPE`) for every Excel export
 - `worker/src/lib/migrate.js`: runtime migrations (run once per isolate before each `/api/*` request), including `migrateCr20261109`
 - `worker/src/lib/students.js`: student registration date / class / placement rules (CR-PR 2026-11-18)
 - `worker/src/lib/finance.js`: invoices, payments, credit, receipts, `ADJUSTED_RATE_SQL` / `studentMonthlyRate`
@@ -33,7 +35,7 @@ MDUIK School Administration System: a multi-tenant system for admissions, record
 - API error messages are bilingual: `'Mesej BM. / English message.'`, returned via `bad(msg, status, extra)`; person-rule messages come from `message(code, kind)` in people.js.
 - `schema.sql` is re-applied on every deploy and must stay idempotent. Never put `ALTER TABLE` there. Add new columns to the `CREATE TABLE` (for fresh databases) and to `migrate.js` (for existing ones), and create indexes on new columns only in `migrate.js`. Destructive migrations back up to `migration_backups` first and are guarded by a `settings` marker.
 - ICs are stored as `ic_hash` (peppered SHA-256), `ic_enc` (AES-GCM) and `ic_masked`. Search only by the hash. Never return `ic_hash`/`ic_enc` to clients (`publicParent`, `publicTeacher`, `stripIc`; import `report_json` stays server side).
-- Use `audit(c, action, entity, id, { before, after })` for every write.
+- Use `audit(c, action, entity, id, { before, after })` for writes, except the actions CR-PR 2026-11-20 CR-5 removed (record creation, views, imports, retention, announcements update/delete, uploads, profile/password, see below). Don't re-add them.
 - Some files use CRLF; edit with CRLF-safe tools. Python is not installed (use Node for scripts).
 - Make small, targeted edits. Run `npm test` and `npm run build` after changes.
 
@@ -80,6 +82,17 @@ MDUIK School Administration System: a multi-tenant system for admissions, record
 - CR-5: `placement` `boarding|day|temp_boarding` (Asrama / Harian / Asrama Sementara), required on create, editable. Import accepts the key or the BM/EN label.
 - `document/CR-PR-18112026.txt` is a different CR (remove login page, demo data, new Super Admin) and is not implemented.
 
+## Business rules: CR-PR 2026-11-20 (`document/CR-PR-20112026.md`)
+- PR-1: reports for Super Admin cover all madrasahs (`school_id IS COALESCE(?, school_id)`) with a "Madrasah" column, or one madrasah via `?school=<id>` (picker on Reports). School Admin/Bursar stay on their active madrasah.
+- PR-2: Excel exports (reports, finance exports, ledger) are real `.xlsx` (`lib/xlsx.js`); sheet names are sanitised (no `/`).
+- CR-1/CR-2: Super Admin → Email templates (`/app/email-templates`, `GET/PATCH/DELETE /email-templates/:key`): edit BM/EN subject and body with `{{placeholders}}` (unknown ones rejected, `template_unknown_vars`), switch each email on/off, restore default. Every email is bilingual: subject "BM / EN", body BM then EN. Off = portal notification kept, `email_status = 'disabled'`. Account and password-reset templates are `locked` (always on). Only changed text is stored. Edits audited (`update`/`reset` email_template).
+- CR-3: audit log retention 3 months: `runDaily` → `purgeAuditLogs` deletes older rows (no archive); `retention_config.audit_log` = 3.
+- CR-4: browser tab title and header brand are just "MDUIK".
+- CR-5: no longer audited: own email/password change; create/view school; create user (and the teacher/parent it creates); view application/interview/student/parent/portal child/portal receipt/report; schedule interview; registration (parent create/link, register student); create student/class/manual invoice; tracking/reminders toggles; parent IC lookup and create; portal contact update; teacher create/add_membership; announcement update/delete; retention scan/dismiss/delete/anonymise; import dry run/confirm and the records it creates; document upload. Login (raw insert in auth.js) is still recorded.
+- CR-6: no `/login` page; `/login` redirects to `/#login` (landing sign-in card). Logout goes to `/`.
+- CR-7: `migrateCr20261120` deletes `migration_backups` rows of every migration whose `migration:<name>` marker is set (runs every isolate).
+- CR-8: data reset: all tables emptied except `settings` (migration markers only) and `retention_config`; R2 objects deleted. `bootstrapSuperAdmin` (migrate.js) creates the first Super Admin from the `BOOTSTRAP_ADMIN` secret (JSON `{fullName,email,phone,ic,language,password}`) when there is no active Super Admin, with `must_change_password = 1`. Delete the secret afterwards.
+
 ## Decisions (CR 2026-11-09)
 - Kept the `monthly_fee_cents` / `registration_fee_cents` column names.
 - Kept the peppered SHA-256 `ic_hash` (no HMAC switch yet).
@@ -94,7 +107,8 @@ MDUIK School Administration System: a multi-tenant system for admissions, record
 - 2026-11-12 (`41ff9fc`, `b0fdc7c`): custom domain `mduik.org` bound (route in wrangler.toml), `APP_URL` = https://mduik.org, secret `MAIL_FROM` = `no_reply@mduik.org` (also the code fallback). Email Service verified: test mail delivered to the owner's Gmail inbox. 33 tests pass.
 - 2026-11-14: implemented CR-PR 2026-11-14 (PR-1, PR-2, CR-1..CR-7). Production finding: 4 of 5 teachers had no `ic_hash` (IC only on the login) — root cause of PR-2. 40 tests pass. Not yet committed/deployed.
 - 2026-11-18: implemented CR-PR 2026-11-17 (CR-1..CR-4). 44 tests pass. Committed `a5fca17`.
-- 2026-11-19: implemented CR-PR 2026-11-18 (classes, registration date, class, placement; `migrateCr20261118`). 51 tests pass. Not yet committed/deployed.
+- 2026-11-19: implemented CR-PR 2026-11-18 (classes, registration date, class, placement; `migrateCr20261118`). 51 tests pass. Committed `a1d2e62`.
+- 2026-11-20: implemented CR-PR 2026-11-20 (PR-1, PR-2, CR-1..CR-8 code; `migrateCr20261120`, `bootstrapSuperAdmin`). 57 tests pass.
 
 ## Next steps
 1. Download the `d1-backup-4a872d8…` artifact from run `42566803089` and store it permanently (expires after 30 days).

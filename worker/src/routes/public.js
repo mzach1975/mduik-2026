@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { encryptIc, hashIc } from '../lib/auth.js';
 import { id, nowIso, today, readJson, bad, json, yearOf, validIc } from '../lib/util.js';
 import { nextNumber } from '../lib/finance.js';
-import { notify, notifyRoles, subjectFor } from '../lib/notify.js';
+import { notify, notifyRoles } from '../lib/notify.js';
 import { auditSystem } from '../lib/audit.js';
 
 const pub = new Hono();
@@ -146,34 +146,27 @@ pub.post('/applications', async (c) => {
     email: body.parentEmail,
     name: body.parentName,
     type: 'application_received',
-    subject: `${subjectFor('application_received', lang)} — ${reference}`,
-    body:
-      lang === 'en'
-        ? [
-            `Dear ${body.parentName},`,
-            `Thank you. The application for ${body.studentName} to ${school.name} has been received and will be processed.`,
-            `Reference number: ${reference}`,
-            `The madrasah will contact you about the next step, such as an interview. You can check the status any time on ${c.env.APP_URL || ''}/status with your reference number and this email address.`,
-          ].join('\n')
-        : [
-            `Assalamualaikum ${body.parentName},`,
-            `Terima kasih. Permohonan ${body.studentName} ke ${school.name} telah diterima dan akan diproses.`,
-            `Nombor rujukan: ${reference}`,
-            `Pihak madrasah akan menghubungi anda tentang langkah seterusnya, seperti temuduga. Semak status pada bila-bila masa di ${c.env.APP_URL || ''}/status dengan nombor rujukan dan alamat e-mel ini.`,
-          ].join('\n'),
+    template: 'application_received_parent',
+    vars: {
+      parent_name: body.parentName,
+      student_name: body.studentName,
+      madrasah: school.name,
+      reference,
+      status_url: `${c.env.APP_URL || ''}/status`,
+    },
     language: lang,
   });
   const adminNotice = {
     type: 'application_received',
-    subject: `Permohonan baharu perlu tindakan / New application needs your attention — ${reference}`,
-    body: [
-      `Permohonan baharu diterima untuk ${school.name} dan memerlukan perhatian anda.`,
-      `Rujukan: ${reference} · Pelajar: ${body.studentName} · Ibu bapa: ${body.parentName} · Status: ${status}`,
-      `A new application for ${school.name} has been received and needs your attention.`,
-      `Reference: ${reference} · Student: ${body.studentName} · Parent: ${body.parentName} · Status: ${status}`,
-      `${c.env.APP_URL || ''}/app/applications/${appId}`,
-    ].join('\n'),
-    language: 'bm',
+    template: 'application_received_admin',
+    vars: {
+      madrasah: school.name,
+      reference,
+      student_name: body.studentName,
+      parent_name: body.parentName,
+      status,
+      link: `${c.env.APP_URL || ''}/app/applications/${appId}`,
+    },
   };
   await notifyRoles(c.env, school.id, ['school_admin'], adminNotice);
   // Also the school's own contact address, unless a School Admin already uses it.

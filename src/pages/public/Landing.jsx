@@ -1,4 +1,5 @@
-import { Link } from 'react-router-dom';
+import { useEffect } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import { useI18n } from '../../i18n';
 import { useApi } from '../../hooks';
 import Icon from '../../components/Icon';
@@ -10,6 +11,11 @@ import { Badge } from '../../components/ui';
 export default function Landing() {
   const { t, lang, date } = useI18n();
   const { user } = useAuth();
+  const location = useLocation();
+  // Links to /#login (sign in, session expired, logout) scroll to the sign-in card.
+  useEffect(() => {
+    if (location.hash === '#login') document.getElementById('login')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [location.hash, location.key]);
   const { data: announcementData } = useApi('/public/announcements');
   const announcements = announcementData?.announcements || [];
 

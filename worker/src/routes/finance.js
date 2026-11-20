@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
 import { authMiddleware, requireRoles } from '../lib/auth.js';
-import { id, nowIso, today, readJson, bad, json, pageParams, pagingMeta, parseMoney, toCsv, toExcel, downloadHeaders, yearOf, monthOf } from '../lib/util.js';
-import { audit, auditView } from '../lib/audit.js';
-import { notifyParentsOfStudent, subjectFor } from '../lib/notify.js';
+import { toXlsx, XLSX_TYPE } from '../lib/xlsx.js';
+import { id, nowIso, today, readJson, bad, json, pageParams, pagingMeta, parseMoney, toCsv, downloadHeaders, yearOf, monthOf } from '../lib/util.js';
+import { audit } from '../lib/audit.js';
+import { notifyParentsOfStudent } from '../lib/notify.js';
+import { rm } from '../lib/templates.js';
 import {
   recordPayment,
   generateMonthlyInvoices,
@@ -355,10 +357,11 @@ finance.post('/refunds/:id/approve', staff, async (c) => {
   await audit(c, 'approve', 'refund', refund.id, { after: { amount: refund.amount_cents, approvedBy: auth.user.id } });
   await notifyParentsOfStudent(c.env, refund.student_id, {
     schoolId: auth.activeSchool,
-    type: 'refund_approved',
-    subject: 'Bayaran balik diluluskan / Refund approved',
-    body: `Bayaran balik RM ${(refund.amount_cents / 100).toFixed(2)} telah diluluskan.\nA refund of RM ${(refund.amount_cents / 100).toFixed(2)} has been approved.`,
-    language: 'bm',
+    template: 'refund_approved',
+    vars: {
+      amount: rm(refund.amount_cents),
+      student_name: (await c.env.DB.prepare('SELECT full_name FROM students WHERE id = ?').bind(refund.student_id).first())?.full_name || '',
+    },
   });
   return json({ ok: true });
 });
@@ -474,9 +477,8 @@ finance.post('/reminders/:id/release', requireRoles('school_admin', 'bursar'), a
   await notifyParentsOfStudent(c.env, reminder.student_id, {
     schoolId: auth.activeSchool,
     type: 'arrears_reminder',
-    subject: `Notis rasmi / Formal notice — ${reminder.invoice_number}`,
-    body: `Notis rasmi: invois ${reminder.invoice_number} sebanyak RM ${(outstanding / 100).toFixed(2)} masih belum dibayar sejak ${reminder.due_date}. Sila hubungi pihak madrasah segera.\nFormal notice: invoice ${reminder.invoice_number} for RM ${(outstanding / 100).toFixed(2)} remains unpaid since ${reminder.due_date}. Please contact the madrasah immediately.`,
-    language: 'bm',
+    template: 'formal_notice',
+    vars: { invoice_no: reminder.invoice_number, amount: rm(outstanding), due_date: reminder.due_date, student_name: reminder.student_name || '' },
   });
   await audit(c, 'release', 'reminder', reminder.id, { after: { stage: reminder.stage } });
   return json({ ok: true });
@@ -637,8 +639,8 @@ finance.get('/exports/:type', staff, async (c) => {
   }
   await audit(c, 'export', type, null, { after: { format, rows: rows.length } });
   if (format === 'xls' || format === 'excel') {
-    return new Response(toExcel(rows, def.columns, def.title), {
-      headers: downloadHeaders(`${type}-${today()}.xls`, 'application/vnd.ms-excel; charset=utf-8'),
+    return new Response(toXlsx(rows, def.columns, def.title), {
+      headers: downloadHeaders(`${type}-${today()}.xlsx`, XLSX_TYPE),
     });
   }
   if (format === 'pdf') {
@@ -701,8 +703,8 @@ finance.get('/ledger', staff, async (c) => {
     ];
     await audit(c, 'export', 'ledger', null, { after: { from, to, format } });
     if (format === 'xls') {
-      return new Response(toExcel(withBalance, columns, 'Ledger'), {
-        headers: downloadHeaders(`ledger-${from}-${to}.xls`, 'application/vnd.ms-excel; charset=utf-8'),
+      return new Response(toXlsx(withBalance, columns, 'Ledger'), {
+        headers: downloadHeaders(`ledger-${from}-${to}.xlsx`, XLSX_TYPE),
       });
     }
     if (format === 'pdf') {

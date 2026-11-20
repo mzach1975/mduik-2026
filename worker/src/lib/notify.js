@@ -1,10 +1,14 @@
 import { id, nowIso } from './util.js';
+import { getTemplate, renderTemplate } from './templates.js';
 
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
 
 /**
  * Create a portal notification and attempt transactional email through the
- * Cloudflare Email Service binding when configured.
+ * Cloudflare Email Service binding when configured. With `template` the
+ * subject and body come from the global email template (lib/templates.js) and
+ * `vars`; the type defaults to the template key. A template switched off stores the portal notification but sends no
+ * email (email_status 'disabled').
  */
 export async function notify(env, {
   schoolId = null,
@@ -17,17 +21,27 @@ export async function notify(env, {
   language = 'bm',
   channel = 'portal',
   html = null,
+  template = null,
+  vars = {},
 }) {
+  let emailOn = true;
+  if (template) {
+    const tpl = await getTemplate(env.DB, template);
+    if (tpl) {
+      ({ subject, body } = renderTemplate(tpl, { name, ...vars }));
+      emailOn = tpl.enabled;
+    }
+  }
   const nid = id('ntf');
   await env.DB.prepare(
     `INSERT INTO notifications
       (id, school_id, user_id, recipient_email, recipient_name, type, subject, body, language, channel, email_status, created_at)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
   )
-    .bind(nid, schoolId, userId, email, name, type, subject, body, language, channel, email ? 'queued' : 'portal_only', nowIso())
+    .bind(nid, schoolId, userId, email, name, type || template, subject, body, language, channel, email ? (emailOn ? 'queued' : 'disabled') : 'portal_only', nowIso())
     .run();
 
-  if (email && env.EMAIL) {
+  if (email && emailOn && env.EMAIL) {
     try {
       await env.EMAIL.send({
         to: email,
@@ -68,39 +82,6 @@ export async function notifyRoles(env, schoolId, roles, payload) {
       ...payload,
     });
   }
-}
-
-const T = {
-  bm: {
-    application_received: 'Permohonan diterima',
-    interview_scheduled: 'Temuduga dijadualkan',
-    decision: 'Keputusan permohonan',
-    waiting_offer: 'Tawaran senarai menunggu',
-    invoice_issued: 'Invois baharu',
-    payment_received: 'Bayaran diterima',
-    receipt_issued: 'Resit dikeluarkan',
-    arrears_reminder: 'Peringatan tunggakan',
-    tracking_on: 'Pemantauan yuran bulanan dihidupkan',
-    tracking_off: 'Pemantauan yuran bulanan dimatikan',
-    registration: 'Pendaftaran pelajar',
-  },
-  en: {
-    application_received: 'Application received',
-    interview_scheduled: 'Interview scheduled',
-    decision: 'Application decision',
-    waiting_offer: 'Waiting list offer',
-    invoice_issued: 'New invoice',
-    payment_received: 'Payment received',
-    receipt_issued: 'Receipt issued',
-    arrears_reminder: 'Arrears reminder',
-    tracking_on: 'Monthly fee tracking switched on',
-    tracking_off: 'Monthly fee tracking switched off',
-    registration: 'Student registration',
-  },
-};
-
-export function subjectFor(type, lang = 'bm') {
-  return (T[lang] || T.bm)[type] || (lang === 'en' ? 'Notification' : 'Pemberitahuan');
 }
 
 export async function notifyParentsOfStudent(env, studentId, payload) {

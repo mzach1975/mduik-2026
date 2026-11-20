@@ -367,10 +367,8 @@ test('migration: existing data is backed up, class/fee plan columns dropped, rat
   const cols = raw.prepare('PRAGMA table_info(students)').all().map((c) => c.name);
   assert.ok(!cols.includes('class_name') && !cols.includes('fee_plan_id') && !cols.includes('phone'));
   assert.equal(raw.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'fee_plans'").get().n, 0);
-  const backup = JSON.parse(raw.prepare("SELECT data_json FROM migration_backups WHERE row_id = 'st1' AND table_name = 'students'").get().data_json);
-  assert.equal(backup.class_name, '1A');
-  assert.equal(backup.fee_plan_id, 'fp1');
-  assert.ok(raw.prepare("SELECT 1 AS ok FROM migration_backups WHERE table_name = 'fee_plans' AND row_id = 'fp1'").get());
+  // CR-PR 2026-11-20 CR-7: backups are removed once the migration has finished.
+  assert.equal(raw.prepare('SELECT COUNT(*) AS n FROM migration_backups').get().n, 0);
   // The fee plan rate is kept as an approved adjustment; the default-rate student gets none.
   assert.equal(raw.prepare("SELECT new_rate_cents FROM fee_adjustments WHERE student_id = 'st1' AND status = 'approved'").get().new_rate_cents, 9000);
   assert.equal(raw.prepare("SELECT COUNT(*) AS n FROM fee_adjustments WHERE student_id = 'st2'").get().n, 0);

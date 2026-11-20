@@ -25,7 +25,8 @@ test('CR-2: School Admin creates, lists, renames, deactivates and deletes classe
   const s = await t.call('adminA', 'POST', '/students', { ...base, classId: c1.data.id });
   assert.equal(s.data.code, 'class_invalid');
   assert.equal((await t.call('adminA', 'DELETE', `/classes/${c1.data.id}`)).status, 200);
-  assert.equal(t.one("SELECT COUNT(*) AS n FROM audit_logs WHERE entity = 'class'").n, 4);
+  // Create is no longer audited (CR-PR 2026-11-20 CR-5); update and delete are.
+  assert.equal(t.one("SELECT COUNT(*) AS n FROM audit_logs WHERE entity = 'class'").n, 2);
 });
 
 test('CR-2: a class with students cannot be deleted; only School Admin manages classes', async () => {
